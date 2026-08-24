@@ -196,22 +196,9 @@ def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
     return "video", (media_response.content, caption)
 
 
-def _authorization_ok(handler: tornado.web.RequestHandler, expected: str | None) -> bool:
-    if not expected:
-        return True
-    bearer = re.sub(r"^Bearer\s+", "", handler.request.headers.get("Authorization", ""), flags=re.I).strip()
-    api_key = handler.request.headers.get("X-API-Key", "").strip()
-    return bearer == expected or api_key == expected
-
-
 class _BaseHandler(tornado.web.RequestHandler):
-    def initialize(self, common_options: Mapping[str, Any], api_token: str | None = None) -> None:
+    def initialize(self, common_options: Mapping[str, Any]) -> None:
         self.common_options = common_options
-        self.api_token = api_token
-
-    def _require_auth(self) -> None:
-        if not _authorization_ok(self, self.api_token):
-            raise tornado.web.HTTPError(401, reason="Invalid API token.")
 
     def _json_body(self) -> dict[str, Any]:
         if not self.request.body:
@@ -246,7 +233,6 @@ class DownloadHandler(_BaseHandler):
         await self._handle(body.get("url") or self.get_body_argument("url", default=""))
 
     async def _handle(self, raw_url: Any) -> None:
-        self._require_auth()
         url = _safe_url(raw_url)
         host = urlparse(url).netloc.lower()
         try:
@@ -284,7 +270,6 @@ class PlayHandler(_BaseHandler):
         await self._handle({"query": self.get_query_argument("query", default="")})
 
     async def _handle(self, body: Mapping[str, Any]) -> None:
-        self._require_auth()
         query = _safe_query(body.get("query"))
         if not query:
             raise tornado.web.HTTPError(400, reason="Missing query.")
@@ -330,7 +315,6 @@ async def _run_combined_webhook(
     webhook_url: str,
     port: int,
     common_options: Mapping[str, Any],
-    api_token: str | None,
     webhook_secret: str | None,
 ) -> None:
     await application.initialize()
@@ -345,9 +329,9 @@ async def _run_combined_webhook(
     tornado_app = tornado.web.Application(
         [
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
-            (r"/api/download/?", DownloadHandler, {"common_options": common_options, "api_token": api_token}),
-            (r"/api/play-hook/?", PlayHandler, {"common_options": common_options, "api_token": api_token}),
-            (r"/api/play/?", PlayHandler, {"common_options": common_options, "api_token": api_token}),
+            (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
+            (r"/api/play-hook/?", PlayHandler, {"common_options": common_options}),
+            (r"/api/play/?", PlayHandler, {"common_options": common_options}),
             (r"/", HealthHandler),
             (r"/health/?", HealthHandler),
         ]
@@ -377,7 +361,6 @@ def run_combined_webhook(
     webhook_url: str,
     port: int,
     common_options: Mapping[str, Any],
-    api_token: str | None = None,
     webhook_secret: str | None = None,
 ) -> None:
     """Run Telegram’s webhook and the scraper-compatible media API on one Heroku port."""
@@ -388,7 +371,6 @@ def run_combined_webhook(
             webhook_url,
             port,
             common_options,
-            api_token,
             webhook_secret,
         )
     )

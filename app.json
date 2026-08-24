@@ -76,10 +76,6 @@
       "description": "Public HTTPS base URL of the Heroku app, for example https://your-app.herokuapp.com.",
       "required": true
     },
-    "MEDIA_API_TOKEN": {
-      "description": "Optional Bearer token or X-API-Key required by the media API routes.",
-      "required": false
-    },
     "WEBHOOK_SECRET_TOKEN": {
       "description": "Optional Telegram webhook secret token.",
       "required": false

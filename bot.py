@@ -2398,7 +2398,6 @@ def main() -> None:
             webhook_url=webhook_url,
             port=port,
             common_options=YTDL_COMMON_OPTIONS,
-            api_token=os.environ.get("MEDIA_API_TOKEN"),
             webhook_secret=os.environ.get("WEBHOOK_SECRET_TOKEN"),
         )
     else:

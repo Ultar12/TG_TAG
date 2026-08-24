@@ -38,7 +38,7 @@ POST /api/play-hook   {"query": "artist song"}
 POST /api/play        {"query": "artist song"}
 ```
 
-If `MEDIA_API_TOKEN` is configured, send it as either `Authorization: Bearer <token>` or `X-API-Key: <token>`. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/play-hook` and `/api/play` search YouTube and return an MP3 with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
+The API routes are public and do not require an API token. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/play-hook` and `/api/play` search YouTube and return an MP3 with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
 
 ## Environment variables
 
