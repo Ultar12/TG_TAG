@@ -674,24 +674,93 @@ def _uai_file_content(upload: dict[str, Any], prompt: str) -> tuple[Any, str]:
     return text, text
 
 
-def _uai_extract_reply(data: Any) -> str:
+def _uai_extract_reply(data: Any, depth: int = 0) -> str:
+    """Extract assistant text from common agent-router response envelopes."""
+    if depth > 8:
+        return ""
+    if isinstance(data, str):
+        return data.strip()
+    if isinstance(data, list):
+        parts = [_uai_extract_reply(item, depth + 1) for item in data]
+        return "".join(part for part in parts if part).strip()
     if not isinstance(data, dict):
         return ""
-    content = data.get("content")
-    if isinstance(content, list):
-        reply = "".join(
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and isinstance(part.get("text"), str)
-        ).strip()
-        if reply:
-            return reply
-    choices = data.get("choices")
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        message = choices[0].get("message") or {}
-        if isinstance(message, dict) and isinstance(message.get("content"), str):
-            return message["content"].strip()
+
+    # Direct text fields cover Anthropic content blocks and provider wrappers.
+    for key in ("text", "output_text", "completion", "answer", "response", "content", "result"):
+        if key in data:
+            candidate = _uai_extract_reply(data[key], depth + 1)
+            if candidate:
+                return candidate
+
+    # OpenAI-compatible choices and streaming delta envelopes.
+    for key in ("choices", "output", "data", "message", "delta"):
+        if key in data:
+            candidate = _uai_extract_reply(data[key], depth + 1)
+            if candidate:
+                return candidate
     return ""
+
+
+def _uai_extract_stream_piece(data: Any, depth: int = 0) -> str:
+    """Extract one streaming text piece without stripping its whitespace."""
+    if depth > 8:
+        return ""
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list):
+        return "".join(_uai_extract_stream_piece(item, depth + 1) for item in data)
+    if not isinstance(data, dict):
+        return ""
+    for key in ("text", "output_text", "completion", "content"):
+        if key in data:
+            piece = _uai_extract_stream_piece(data[key], depth + 1)
+            if piece:
+                return piece
+    for key in ("choices", "output", "data", "message", "delta", "result", "response"):
+        if key in data:
+            piece = _uai_extract_stream_piece(data[key], depth + 1)
+            if piece:
+                return piece
+    return ""
+
+
+def _uai_extract_sse_text(raw: str) -> str:
+    """Extract text from a text/event-stream response without logging its body."""
+    parts = []
+    for line in (raw or "").splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        text = _uai_extract_stream_piece(chunk)
+        if text:
+            parts.append(text)
+    return "".join(parts).strip()
+
+
+def _uai_response_data(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        raw = (response.text or "").strip()
+        streamed = _uai_extract_sse_text(raw)
+        if streamed:
+            return {"text": streamed}
+        return {"text": raw} if raw and not raw.startswith("<") else {}
+
+
+def _uai_shape(data: Any) -> str:
+    if isinstance(data, dict):
+        return "object keys=" + ",".join(sorted(str(key) for key in data.keys())[:20])
+    if isinstance(data, list):
+        return f"array length={len(data)}"
+    return type(data).__name__
 
 
 def _uai_error_text(data: Any) -> str:
@@ -802,15 +871,17 @@ class UAIHandler(tornado.web.RequestHandler):
                     headers=headers,
                     timeout=float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300")),
                 )
-                try:
-                    response_data = response.json()
-                except ValueError:
-                    response_data = {}
+                response_data = _uai_response_data(response)
                 if response.status_code < 200 or response.status_code >= 300:
                     logger.warning("Agent router returned HTTP %s: %s", response.status_code, _uai_error_text(response_data)[:500])
                     raise RuntimeError("Agent router request failed")
                 reply = _uai_clean_text(_uai_extract_reply(response_data), UAI_MAX_TEXT_CHARS)
                 if not reply:
+                    logger.warning(
+                        "Agent router returned HTTP %s without text; response shape: %s",
+                        response.status_code,
+                        _uai_shape(response_data),
+                    )
                     raise RuntimeError("Agent router returned no text")
 
                 UAI_HISTORIES[chat_id] = (history + [

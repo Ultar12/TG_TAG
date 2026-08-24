@@ -37,7 +37,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.types import BigInteger
 import yt_dlp
-from media_api import run_combined_webhook
+from media_api import run_combined_webhook, _uai_extract_reply, _uai_response_data
 
 from prettytable import PrettyTable
 
@@ -132,26 +132,12 @@ def agent_router_request(messages: list[dict], max_tokens: int | None = None) ->
         headers=headers,
         timeout=AGENT_ROUTER_TIMEOUT_SECONDS,
     )
-    try:
-        data = response.json()
-    except ValueError:
-        data = {}
+    data = _uai_response_data(response)
     if response.status_code < 200 or response.status_code >= 300:
         raise RuntimeError("Agent router request failed")
-    content = data.get("content") if isinstance(data, dict) else None
-    if isinstance(content, list):
-        text = "".join(
-            item.get("text", "")
-            for item in content
-            if isinstance(item, dict) and isinstance(item.get("text"), str)
-        ).strip()
-        if text:
-            return text
-    choices = data.get("choices") if isinstance(data, dict) else None
-    if isinstance(choices, list) and choices:
-        message = choices[0].get("message") or {}
-        if isinstance(message, dict) and isinstance(message.get("content"), str):
-            return message["content"].strip()
+    text = _uai_extract_reply(data)
+    if text:
+        return text
     raise RuntimeError("Agent router returned no text")
 
 try:
