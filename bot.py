@@ -12,7 +12,7 @@ import requests
 import json
 from bs4 import BeautifulSoup
 import base64
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 import google.generativeai as genai
 import openai # For DALL-E image creation
 import pytesseract # For OCR
@@ -304,7 +304,8 @@ async def resend_email_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info(f"Stopping recurring email job {job.name} as it has reached the stop day.")
         await context.bot.send_message(
             chat_id=data['chat_id'], 
-            text=f"Recurring email to *{escape_markdown(data['to'], version=2)}* has now stopped as scheduled\.", 
+            text=f"Recurring email to *{escape_markdown(data['to'], version=2)}* has now stopped as scheduled\\.",
+
             parse_mode=ParseMode.MARKDOWN_V2
         )
         job.schedule_removal()
@@ -326,7 +327,8 @@ async def resend_email_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Failed to send email via job {job.name}: {e}")
         await context.bot.send_message(
             chat_id=data['chat_id'], 
-            text=f"⚠️ Failed to send recurring email to *{escape_markdown(data['to'], version=2)}*\.", 
+            text=f"⚠️ Failed to send recurring email to *{escape_markdown(data['to'], version=2)}*\\.",
+
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
@@ -352,7 +354,8 @@ async def handle_resend_interval_selection(update: Update, context: ContextTypes
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
-        f"Great\! The email will be resent every {interval // 60} minutes\.\n\nOn which day should it stop?", 
+        f"Great\\! The email will be resent every {interval // 60} minutes\\.\n\nOn which day should it stop?",
+
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN_V2
     )
@@ -393,7 +396,8 @@ async def handle_resend_stop_day_selection(update: Update, context: ContextTypes
     stop_day_name = days[stop_day_index]
     
     await query.edit_message_text(
-        f"✅ All set\! I will resend the email to *{escape_markdown(email_data['to'], version=2)}* every {interval // 60} minutes\. This will stop on *{stop_day_name}*\.", 
+        f"✅ All set\\! I will resend the email to *{escape_markdown(email_data['to'], version=2)}* every {interval // 60} minutes\\. This will stop on *{stop_day_name}*\\.",
+
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
