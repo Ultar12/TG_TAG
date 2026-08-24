@@ -21,7 +21,7 @@ import smtplib
 from email.message import EmailMessage
 import shlex # For smart command parsing
 import re # For robust button handling
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from gtts import gTTS
 import random
 import subprocess # For running the Node.js script
@@ -1669,21 +1669,101 @@ def detect_download_platform(url: str) -> str:
 
 
 # --- Router function for manual and automatic downloads ---
-async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
-    """Routes a URL to the correct downloader based on its hostname."""
-    platform = context.user_data.pop('platform', None) or detect_download_platform(url)
+def media_api_base_url() -> str:
+    configured = (
+        os.environ.get("MEDIA_API_BASE_URL")
+        or os.environ.get("WEBHOOK_URL")
+        or ""
+    ).strip().rstrip("/")
+    if configured:
+        return configured
+    port = os.environ.get("PORT")
+    return f"http://127.0.0.1:{port}" if port else ""
 
-    if platform == 'TikTok':
-        # Use the special handler for TikTok photo dumps
-        await download_tiktok_image_post(update, context, url=url, feedback=feedback)
-    elif platform == 'Pinterest':
-        # Pinterest has special handling for images/videos
-        await download_pinterest_content(update, context, url=url, feedback=feedback)
-    elif platform in ['Instagram', 'Facebook', 'YouTube', 'General']:
-        # Use yt-dlp for all other public URLs it supports.
-        await download_content_from_url(update, context, url=url, platform=platform, feedback=feedback)
-    else:
-        await update.message.reply_text("This link type is not supported for downloading.")
+
+def media_api_error(response) -> str:
+    try:
+        body = response.json()
+        raw_error = str(body.get("error") or body.get("message") or "") if isinstance(body, dict) else ""
+    except (ValueError, TypeError):
+        raw_error = ""
+
+    if re.search(r"requested format|format is not available|no video formats|unsupported format", raw_error, re.IGNORECASE):
+        return "File error. Try another link."
+    if re.search(r"private|login|not found|no media|deleted", raw_error, re.IGNORECASE):
+        return "Not found. Try another link."
+    if re.search(r"too large|size limit|payload", raw_error, re.IGNORECASE):
+        return "File too large to send."
+    return "Download failed. Please try again."
+
+
+async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
+    """Use TG_TAG /api/download, matching the WhatsApp .dl endpoint contract."""
+    feedback = feedback or await update.message.reply_text("Downloading...")
+    base_url = media_api_base_url()
+    if not base_url:
+        await feedback.edit_text("Download service is not configured.")
+        return
+
+    try:
+        response = await asyncio.to_thread(
+            requests.get,
+            f"{base_url}/api/download",
+            params={"url": url},
+            timeout=600,
+        )
+        if response.status_code >= 400:
+            logger.warning("TG_TAG media API returned HTTP %s for %s", response.status_code, url)
+            await feedback.edit_text(media_api_error(response))
+            return
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "application/json" in content_type:
+            try:
+                data = response.json()
+            except ValueError:
+                await feedback.edit_text("Download failed. The media response was invalid.")
+                return
+            urls = data.get("urls") if isinstance(data, dict) else None
+            if data.get("type") != "images" or not isinstance(urls, list) or not urls:
+                await feedback.edit_text("Download failed. No media was found.")
+                return
+            caption = str(data.get("caption") or "").strip() or None
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=urls[0],
+                caption=caption,
+            )
+            await feedback.delete()
+            return
+
+        media = response.content
+        if len(media) < 5000:
+            await feedback.edit_text("Download failed. The media file was empty.")
+            return
+
+        caption = None
+        raw_caption = response.headers.get("X-Media-Caption", "")
+        if raw_caption:
+            caption = unquote(raw_caption).strip() or None
+
+        await context.bot.send_video(
+            chat_id=update.effective_chat.id,
+            video=media,
+            caption=caption,
+        )
+        await feedback.delete()
+    except requests.Timeout:
+        await feedback.edit_text("Download failed. The request timed out.")
+    except Exception as exc:
+        logger.error("Telegram media API delivery failed for %s: %s", url, exc)
+        await feedback.edit_text("Download failed. Please try again.")
+
+
+async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
+    """Route every Telegram URL through TG_TAG's public media API."""
+    context.user_data.pop('platform', None)
+    await download_via_media_api(update, context, url=url, feedback=feedback)
 # --- END Router function ---
 
 # --- PINTEREST DOWNLOAD WITH MULTIPLE API FALLBACKS ---
