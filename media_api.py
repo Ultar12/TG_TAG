@@ -275,11 +275,23 @@ class PlayHandler(_BaseHandler):
             raise tornado.web.HTTPError(400, reason="Missing query.")
         try:
             track = await asyncio.to_thread(_search_youtube_sync, query, self.common_options)
-            audio = await asyncio.to_thread(_download_audio_sync, track["url"], self.common_options)
+            mode = str(body.get("mode") or "audio").strip().lower()
+            if mode in {"video", "vla", "mp4"}:
+                media = await asyncio.to_thread(
+                    _download_video_sync, track["url"], self.common_options, True
+                )
+                filename = "video.mp4"
+                content_type = "video/mp4"
+            else:
+                media = await asyncio.to_thread(
+                    _download_audio_sync, track["url"], self.common_options
+                )
+                filename = "audio.mp3"
+                content_type = "audio/mpeg"
             self.set_header("X-Track-Title", track["title"])
             self.set_header("X-Track-Artist", track["artist"])
             self.set_header("X-Track-Source", "youtube")
-            self._write_media(audio, "audio.mp3", "audio/mpeg")
+            self._write_media(media, filename, content_type)
         except tornado.web.HTTPError:
             raise
         except Exception as exc:
