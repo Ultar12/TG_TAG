@@ -232,6 +232,7 @@ def _download_video_file_sync(
     common_options: Mapping[str, Any],
     require_audio: bool = True,
     max_height: int = 2160,
+    normalize: bool = False,
 ) -> tuple[str, str]:
     directory = tempfile.mkdtemp(prefix="tg_tag_api_video_")
     try:
@@ -249,10 +250,14 @@ def _download_video_file_sync(
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.download([source_url])
         _copy_valid_download(directory, raw_path, require_audio=require_audio)
-        _normalize_video_for_whatsapp(raw_path, output_path)
-        if os.path.getsize(output_path) > MAX_API_FILE_BYTES:
-            raise MediaAPIError("The normalized video is larger than the supported 2 GB limit.")
-        return output_path, directory
+        if normalize:
+            _normalize_video_for_whatsapp(raw_path, output_path)
+            selected_path = output_path
+        else:
+            selected_path = raw_path
+        if os.path.getsize(selected_path) > MAX_API_FILE_BYTES:
+            raise MediaAPIError("The downloaded video is larger than the supported 2 GB limit.")
+        return selected_path, directory
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
         raise
@@ -321,6 +326,7 @@ async def _run_play_job(
                 common_options,
                 True,
                 1080,
+                True,
             )
             filename = "video.mp4"
             content_type = "video/mp4"
@@ -463,13 +469,9 @@ class DownloadHandler(_BaseHandler):
                         self.write(payload)
                         return
                     content, caption = payload
-                    normalized = await asyncio.to_thread(
-                        _normalize_video_bytes_sync,
-                        content,
-                    )
                     if caption:
                         self.set_header("X-Media-Caption", quote(caption, safe=""))
-                    self._write_media(normalized, "tiktok-video.mp4", "video/mp4")
+                    self._write_media(content, "tiktok-video.mp4", "video/mp4")
                     return
 
             if not requested_quality:
