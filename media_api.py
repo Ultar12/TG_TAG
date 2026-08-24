@@ -746,13 +746,21 @@ def _uai_extract_sse_text(raw: str) -> str:
 
 def _uai_response_data(response: requests.Response) -> Any:
     try:
-        return response.json()
+        data = response.json()
+        if data not in ({}, None, ""):
+            return data
     except ValueError:
-        raw = (response.text or "").strip()
-        streamed = _uai_extract_sse_text(raw)
-        if streamed:
-            return {"text": streamed}
-        return {"text": raw} if raw and not raw.startswith("<") else {}
+        data = None
+    raw = (response.text or "").strip()
+    streamed = _uai_extract_sse_text(raw)
+    if streamed:
+        return {"text": streamed}
+    if raw and not raw.startswith("<"):
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return {"text": raw}
+    return data if data not in (None, "") else {}
 
 
 def _uai_shape(data: Any) -> str:
@@ -862,6 +870,19 @@ class UAIHandler(tornado.web.RequestHandler):
                         or os.environ.get("ANTHROPIC_VERSION")
                         or "2023-06-01"
                     ),
+                    "User-Agent": "claude-cli/2.1.158 (external, sdk-cli)",
+                    "anthropic-beta": os.environ.get(
+                        "AGENT_ROUTER_ANTHROPIC_BETA",
+                        "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12",
+                    ),
+                    "anthropic-dangerous-direct-browser-access": "true",
+                    "x-app": "cli",
+                    "X-Stainless-Lang": "python",
+                    "X-Stainless-Package-Version": "0.32.1",
+                    "X-Stainless-OS": "linux",
+                    "X-Stainless-Arch": "amd64",
+                    "X-Stainless-Runtime": "Python",
+                    "X-Stainless-Runtime-Version": "3.11",
                     "Content-Type": "application/json",
                 }
                 response = await asyncio.to_thread(

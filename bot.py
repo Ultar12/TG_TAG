@@ -124,6 +124,19 @@ def agent_router_request(messages: list[dict], max_tokens: int | None = None) ->
         "Authorization": f"Bearer {AGENT_ROUTER_API_KEY}",
         "x-api-key": AGENT_ROUTER_API_KEY,
         "anthropic-version": os.environ.get("ANTHROPIC_VERSION", "2023-06-01"),
+        "User-Agent": "claude-cli/2.1.158 (external, sdk-cli)",
+        "anthropic-beta": os.environ.get(
+            "AGENT_ROUTER_ANTHROPIC_BETA",
+            "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12",
+        ),
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-app": "cli",
+        "X-Stainless-Lang": "python",
+        "X-Stainless-Package-Version": "0.32.1",
+        "X-Stainless-OS": "linux",
+        "X-Stainless-Arch": "amd64",
+        "X-Stainless-Runtime": "Python",
+        "X-Stainless-Runtime-Version": "3.11",
         "Content-Type": "application/json",
     }
     response = requests.post(
