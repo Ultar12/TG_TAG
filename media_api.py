@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -19,7 +20,6 @@ from urllib.parse import quote, urlparse
 import requests
 import tornado.web
 from tornado.httpserver import HTTPServer
-import google.generativeai as genai
 import pymupdf as fitz
 from PIL import Image
 import yt_dlp
@@ -597,14 +597,20 @@ def _uai_history_key(value: Any) -> str:
     return key or "default_chat"
 
 
-def _uai_gemini_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    converted: list[dict[str, Any]] = []
+
+
+def _uai_agent_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
     for item in history:
-        role = "model" if item.get("role") == "assistant" else "user"
-        text = _uai_clean_text(item.get("text"), UAI_HISTORY_FILE_CHARS)
-        if text:
-            converted.append({"role": role, "parts": [{"text": text}]})
-    return converted
+        role = "assistant" if item.get("role") == "assistant" else "user"
+        content = item.get("content")
+        if isinstance(content, list):
+            safe_content = content
+        else:
+            safe_content = _uai_clean_text(item.get("text") or content, UAI_HISTORY_FILE_CHARS)
+        if safe_content:
+            messages.append({"role": role, "content": safe_content})
+    return messages
 
 
 def _uai_file_content(upload: dict[str, Any], prompt: str) -> tuple[Any, str]:
@@ -622,22 +628,30 @@ def _uai_file_content(upload: dict[str, Any], prompt: str) -> tuple[Any, str]:
                 image.load()
             image_bytes = io.BytesIO()
             image.save(image_bytes, format="JPEG", quality=82, optimize=True)
-            image_part = {
-                "mime_type": "image/jpeg",
-                "data": image_bytes.getvalue(),
-            }
+            encoded = base64.b64encode(image_bytes.getvalue()).decode("ascii")
             text = _uai_clean_text(prompt or f"Analyze the attached image: {filename}.", UAI_HISTORY_FILE_CHARS)
-            return [image_part, text], f"[Attached image: {filename}] {text}"
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": encoded,
+                    },
+                },
+                {"type": "text", "text": text},
+            ]
+            return content, f"[Attached image: {filename}] {text}"
         except Exception as exc:
             raise tornado.web.HTTPError(400, reason="The attached image could not be processed.") from exc
 
     if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
         try:
             with fitz.open(stream=data, filetype="pdf") as document:
-                extracted = "\\n".join(page.get_text() for page in document)
+                extracted = "\n".join(page.get_text() for page in document)
             extracted = _uai_clean_text(extracted, UAI_HISTORY_FILE_CHARS)
             text = (
-                f"[Attached PDF: {filename}]\\n```\\n{extracted}\\n```\\n\\n"
+                f"[Attached PDF: {filename}]\n```\n{extracted}\n```\n\n"
                 f"{_uai_clean_text(prompt or 'Analyze this document.', UAI_HISTORY_FILE_CHARS)}"
             )
             return text, text
@@ -646,7 +660,7 @@ def _uai_file_content(upload: dict[str, Any], prompt: str) -> tuple[Any, str]:
 
     if b"\x00" in data:
         text = (
-            f"[Attached binary file: {filename}; the raw contents were not interpreted as text.]\\n\\n"
+            f"[Attached binary file: {filename}; the raw contents were not interpreted as text.]\n\n"
             f"{_uai_clean_text(prompt or 'Explain what can be inferred from this file name and type.', UAI_HISTORY_FILE_CHARS)}"
         )
         return text, text
@@ -654,26 +668,48 @@ def _uai_file_content(upload: dict[str, Any], prompt: str) -> tuple[Any, str]:
     decoded = data.decode("utf-8", errors="replace")
     decoded = _uai_clean_text(decoded, UAI_HISTORY_FILE_CHARS)
     text = (
-        f"[Attached file: {filename}]\\n```\\n{decoded}\\n```\\n\\n"
+        f"[Attached file: {filename}]\n```\n{decoded}\n```\n\n"
         f"{_uai_clean_text(prompt or 'Analyze this file.', UAI_HISTORY_FILE_CHARS)}"
     )
     return text, text
 
 
-class UAIHandler(tornado.web.RequestHandler):
-    """Direct AI endpoint for the WhatsApp/other bot plugin.
+def _uai_extract_reply(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    content = data.get("content")
+    if isinstance(content, list):
+        reply = "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ).strip()
+        if reply:
+            return reply
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") or {}
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            return message["content"].strip()
+    return ""
 
-    Compatible request fields:
-      multipart/form-data: prompt, chatId, resetHistory, optional file
-      application/json: prompt, chatId, resetHistory
-    """
+
+def _uai_error_text(data: Any) -> str:
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("type") or "agent router error")
+        if isinstance(error, str):
+            return error
+    return "agent router error"
+
+
+class UAIHandler(tornado.web.RequestHandler):
+    """Direct Scraper-compatible AI endpoint using an agent-router messages API."""
 
     def _authorized(self) -> bool:
         expected = os.environ.get("UAI_API_TOKEN", "").strip()
-        if not expected:
-            return True
-        supplied = self.request.headers.get("X-UAI-Token", "")
-        return supplied == expected
+        return not expected or self.request.headers.get("X-UAI-Token", "") == expected
 
     def _request_values(self) -> tuple[str, str, bool, dict[str, Any] | None]:
         content_type = self.request.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
@@ -690,25 +726,25 @@ class UAIHandler(tornado.web.RequestHandler):
                 _uai_truthy(body.get("resetHistory")),
                 None,
             )
-
         prompt = _uai_clean_text(self.get_body_argument("prompt", default=""), UAI_HISTORY_FILE_CHARS)
         chat_id = _uai_history_key(self.get_body_argument("chatId", default="default_chat"))
         reset_history = _uai_truthy(self.get_body_argument("resetHistory", default="false"))
         uploads = self.request.files.get("file", [])
-        upload = uploads[0] if uploads else None
-        return prompt, chat_id, reset_history, upload
+        return prompt, chat_id, reset_history, (uploads[0] if uploads else None)
 
     async def post(self) -> None:
         if not self._authorized():
             raise tornado.web.HTTPError(401, reason="Invalid AI API token.")
-
         prompt, chat_id, reset_history, upload = self._request_values()
         if not prompt and not upload:
             raise tornado.web.HTTPError(400, reason="Provide a prompt or attach a file.")
-        if not os.environ.get("GEMINI_API_KEY", "").strip():
+
+        agent_url = os.environ.get("AGENT_ROUTER_URL", "").strip()
+        agent_key = os.environ.get("AGENT_ROUTER_API_KEY", "").strip()
+        if not agent_url or not agent_key:
             self.set_status(503)
             self.set_header("Content-Type", "application/json")
-            self.write({"success": False, "error": "AI service is not configured."})
+            self.write({"success": False, "error": "AI agent service is not configured."})
             return
 
         lock = UAI_CHAT_LOCKS.setdefault(chat_id, asyncio.Lock())
@@ -716,38 +752,54 @@ class UAIHandler(tornado.web.RequestHandler):
             try:
                 history = [] if reset_history else list(UAI_HISTORIES.get(chat_id, []))
                 if upload:
-                    model_content, history_text = await asyncio.to_thread(
-                        _uai_file_content,
-                        upload,
-                        prompt,
-                    )
+                    model_content, history_text = await asyncio.to_thread(_uai_file_content, upload, prompt)
                 else:
                     model_content = prompt
                     history_text = prompt
 
-                model_name = os.environ.get("UAI_GEMINI_MODEL", "gemini-1.5-flash").strip()
-                model = genai.GenerativeModel(model_name)
-                chat = model.start_chat(history=_uai_gemini_history(history))
-                response = await asyncio.to_thread(chat.send_message, model_content)
-                reply = _uai_clean_text(getattr(response, "text", ""), UAI_MAX_TEXT_CHARS)
+                messages = _uai_agent_messages(history)
+                messages.append({"role": "user", "content": model_content})
+                model = os.environ.get("AGENT_ROUTER_MODEL", "claude-opus-5").strip()
+                max_tokens = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
+                payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
+                headers = {
+                    "Authorization": f"Bearer {agent_key}",
+                    "x-api-key": agent_key,
+                    "anthropic-version": os.environ.get("AGENT_ROUTER_ANTHROPIC_VERSION", "2023-06-01"),
+                    "Content-Type": "application/json",
+                }
+                response = await asyncio.to_thread(
+                    requests.post,
+                    agent_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300")),
+                )
+                try:
+                    response_data = response.json()
+                except ValueError:
+                    response_data = {}
+                if response.status_code < 200 or response.status_code >= 300:
+                    logger.warning("Agent router returned HTTP %s: %s", response.status_code, _uai_error_text(response_data)[:500])
+                    raise RuntimeError("Agent router request failed")
+                reply = _uai_clean_text(_uai_extract_reply(response_data), UAI_MAX_TEXT_CHARS)
                 if not reply:
-                    raise RuntimeError("AI provider returned an empty response")
+                    raise RuntimeError("Agent router returned no text")
 
-                new_history = history + [
+                UAI_HISTORIES[chat_id] = (history + [
                     {"role": "user", "text": _uai_clean_text(history_text, UAI_HISTORY_FILE_CHARS)},
                     {"role": "assistant", "text": reply},
-                ]
-                UAI_HISTORIES[chat_id] = new_history[-UAI_HISTORY_MAX_MESSAGES:]
+                ])[-UAI_HISTORY_MAX_MESSAGES:]
                 self.set_status(200)
                 self.set_header("Content-Type", "application/json")
                 self.write({"success": True, "text": reply})
             except tornado.web.HTTPError:
                 raise
             except Exception:
-                logger.exception("Direct /api/uai request failed")
+                logger.exception("Direct /api/uai agent-router request failed")
                 self.set_status(502)
                 self.set_header("Content-Type", "application/json")
-                self.write({"success": False, "error": "AI request failed. Please try again."})
+                self.write({"success": False, "error": "AI agent request failed. Please try again."})
 
 
 class _BaseHandler(tornado.web.RequestHandler):

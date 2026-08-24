@@ -22,6 +22,7 @@ import smtplib
 from email.message import EmailMessage
 import shlex # For smart command parsing
 import re # For robust button handling
+from urllib.parse import urlparse
 from gtts import gTTS
 import random
 import subprocess # For running the Node.js script
@@ -212,7 +213,7 @@ async def show_ai_tools_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def show_media_tools_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
-        [KeyboardButton("Play Music / Video"), KeyboardButton("Download Media")],
+        [KeyboardButton("Play Music / Video")],
         [KeyboardButton("Download PDF"), KeyboardButton("Search TikTok")],
         [KeyboardButton("Youtube"), KeyboardButton("Search Movie")],
         [KeyboardButton("Back to Main Menu")]
@@ -1590,23 +1591,47 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-# --- NEW: Router function for downloads ---
+AUTO_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+
+def extract_first_http_url(text: str) -> str | None:
+    match = AUTO_URL_RE.search(text or "")
+    if not match:
+        return None
+    return match.group(0).rstrip(".,!?;:)]}")
+
+
+def detect_download_platform(url: str) -> str:
+    host = urlparse(url).netloc.lower().split(":", 1)[0].removeprefix("www.")
+    if host == "tiktok.com" or host.endswith(".tiktok.com"):
+        return "TikTok"
+    if host == "pinterest.com" or host.endswith(".pinterest.com") or host == "pin.it":
+        return "Pinterest"
+    if host == "instagram.com" or host.endswith(".instagram.com"):
+        return "Instagram"
+    if host == "facebook.com" or host.endswith(".facebook.com") or host == "fb.watch":
+        return "Facebook"
+    if host in {"youtube.com", "youtu.be"} or host.endswith(".youtube.com"):
+        return "YouTube"
+    return "General"
+
+
+# --- Router function for manual and automatic downloads ---
 async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    """Routes the download request to the correct function based on the platform."""
-    platform = context.user_data.pop('platform', 'unknown')
-    
+    """Routes a URL to the correct downloader based on its hostname."""
+    platform = context.user_data.pop('platform', None) or detect_download_platform(url)
+
     if platform == 'TikTok':
         # Use the special handler for TikTok photo dumps
         await download_tiktok_image_post(update, context, url=url)
     elif platform == 'Pinterest':
         # Pinterest has special handling for images/videos
         await download_pinterest_content(update, context, url=url)
-    elif platform in ['Instagram', 'Facebook', 'YouTube']:
-        # Use the general yt_dlp handler for supported sites
+    elif platform in ['Instagram', 'Facebook', 'YouTube', 'General']:
+        # Use yt-dlp for all other public URLs it supports.
         await download_content_from_url(update, context, url=url, platform=platform)
     else:
-        # Fallback for an unknown or unhandled platform
-        await update.message.reply_text(f"Download from '{platform}' is not supported or an error occurred.")
+        await update.message.reply_text("This link type is not supported for downloading.")
 # --- END Router function ---
 
 # --- PINTEREST DOWNLOAD WITH MULTIPLE API FALLBACKS ---
@@ -2226,6 +2251,11 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not update.message or not update.message.text: return
     state = context.user_data.get('state')
     if not state:
+        auto_url = extract_first_http_url(update.message.text)
+        if auto_url:
+            await save_user_to_db(update, context, event_type="Automatic media download")
+            await handle_media_download(update, context, url=auto_url)
+            return
         await save_user_to_db(update, context)
         return
     text = update.message.text
@@ -2338,7 +2368,6 @@ def main() -> None:
         "Summarize Link": lambda u,c: prompt_for_input(u,c,'awaiting_summary_url', "Send the article link.", "Pressed 'Summarize Link'"),
         "Play Music / Video": lambda u,c: prompt_for_input(u,c,'awaiting_song_name', "What song or video?", "Pressed 'Play'"),
         "Download PDF": lambda u,c: prompt_for_input(u,c,'awaiting_novel_title', "What PDF/novel to search for?", "Pressed 'Download PDF'"),
-        "Download Media": show_download_platform_options,
         "Search Movie": lambda u,c: prompt_for_input(u,c,'awaiting_movie_title', "What movie?", "Pressed 'Search Movie'"),
         "Search TikTok": lambda u,c: prompt_for_input(u,c,'awaiting_tiktok_query', "Search TikTok for?", "Pressed 'Search TikTok'"),
         "Youtube": lambda u,c: prompt_for_input(u,c,'awaiting_ytsearch_query', "Search YouTube for?", "Pressed 'Youtube'"),
@@ -2357,7 +2386,6 @@ def main() -> None:
         CallbackQueryHandler(handle_play_cancel, pattern="^play_cancel"),
         CallbackQueryHandler(handle_audio_download, pattern="^dl_audio:"),
         CallbackQueryHandler(handle_video_download, pattern="^dl_video:"),
-        CallbackQueryHandler(handle_platform_selection, pattern="^dl_platform:"),
         CallbackQueryHandler(handle_tiktok_count_selection, pattern="^tiktok_count:"),
         CallbackQueryHandler(handle_novel_download, pattern="^novel_dl:"),
         # --- HANDLERS for recurring email ---

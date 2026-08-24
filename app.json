@@ -37,11 +37,27 @@
       "required": true
     },
     "GEMINI_API_KEY": {
-      "description": "Optional Google Gemini API key used by the direct /api/uai endpoint and existing AI features.",
+      "description": "Optional Google Gemini API key for the existing TG_TAG AI features.",
       "required": false
     },
-    "UAI_GEMINI_MODEL": {
-      "description": "Optional Gemini model name for /api/uai. Defaults to gemini-1.5-flash.",
+    "AGENT_ROUTER_URL": {
+      "description": "Agent-router messages API URL used by /api/uai.",
+      "required": false
+    },
+    "AGENT_ROUTER_API_KEY": {
+      "description": "Agent-router API key used by /api/uai.",
+      "required": false
+    },
+    "AGENT_ROUTER_MODEL": {
+      "description": "Optional agent-router model. Defaults to claude-opus-5.",
+      "required": false
+    },
+    "AGENT_ROUTER_MAX_TOKENS": {
+      "description": "Optional maximum response tokens for /api/uai. Defaults to 8192.",
+      "required": false
+    },
+    "AGENT_ROUTER_TIMEOUT_SECONDS": {
+      "description": "Optional agent-router request timeout. Defaults to 300 seconds.",
       "required": false
     },
     "UAI_API_TOKEN": {
