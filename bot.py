@@ -13,7 +13,6 @@ import json
 from bs4 import BeautifulSoup
 import base64
 import pymupdf as fitz  # PyMuPDF
-import google.generativeai as genai
 import openai # For DALL-E image creation
 import pytesseract # For OCR
 from PIL import Image # For OCR
@@ -58,8 +57,12 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = os.environ.get("ADMIN_ID")
-# AI Keys
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# AI and agent-router configuration
+AGENT_ROUTER_URL = os.environ.get("AGENT_ROUTER_URL") or os.environ.get("ANTHROPIC_BASE_URL") or ""
+AGENT_ROUTER_API_KEY = os.environ.get("AGENT_ROUTER_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+AGENT_ROUTER_MODEL = os.environ.get("AGENT_ROUTER_MODEL") or os.environ.get("ANTHROPIC_MODEL") or "claude-opus-5"
+AGENT_ROUTER_MAX_TOKENS = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
+AGENT_ROUTER_TIMEOUT_SECONDS = float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") # For DALL-E only
 # Email Keys
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
@@ -93,13 +96,63 @@ if not DATABASE_URL:
     logger.warning("DATABASE_URL is not set; using ephemeral SQLite database at tg_tag.db.")
 
 # --- API Configurations ---
-try:
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-        logger.info("Gemini AI client configured.")
-    else: gemini_model = None; logger.warning("GEMINI_API_KEY not found.")
-except Exception as e: gemini_model = None; logger.error(f"Failed to configure Gemini API: {e}")
+def _agent_router_endpoint() -> str:
+    base_url = AGENT_ROUTER_URL.strip().rstrip("/")
+    if not base_url:
+        return ""
+    if base_url.endswith("/v1/messages"):
+        return base_url
+    if base_url.endswith("/v1"):
+        return f"{base_url}/messages"
+    return f"{base_url}/v1/messages"
+
+
+def agent_router_available() -> bool:
+    return bool(_agent_router_endpoint() and AGENT_ROUTER_API_KEY.strip())
+
+
+def agent_router_request(messages: list[dict], max_tokens: int | None = None) -> str:
+    endpoint = _agent_router_endpoint()
+    if not endpoint or not AGENT_ROUTER_API_KEY.strip():
+        raise RuntimeError("AI agent service is not configured")
+    payload = {
+        "model": AGENT_ROUTER_MODEL,
+        "max_tokens": max_tokens or AGENT_ROUTER_MAX_TOKENS,
+        "messages": messages,
+    }
+    headers = {
+        "Authorization": f"Bearer {AGENT_ROUTER_API_KEY}",
+        "x-api-key": AGENT_ROUTER_API_KEY,
+        "anthropic-version": os.environ.get("ANTHROPIC_VERSION", "2023-06-01"),
+        "Content-Type": "application/json",
+    }
+    response = requests.post(
+        endpoint,
+        json=payload,
+        headers=headers,
+        timeout=AGENT_ROUTER_TIMEOUT_SECONDS,
+    )
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError("Agent router request failed")
+    content = data.get("content") if isinstance(data, dict) else None
+    if isinstance(content, list):
+        text = "".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        ).strip()
+        if text:
+            return text
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") or {}
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            return message["content"].strip()
+    raise RuntimeError("Agent router returned no text")
 
 try:
     if OPENAI_API_KEY:
@@ -239,7 +292,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "**Bot Commands Guide:**\n\n"
         "You can use the menu buttons or the following commands:\n\n"
-        "**/gemini <prompt>**: Ask the AI a question.\n"
+        "**/agent <prompt>**: Ask the configured AI agent a question.\n"
         "**/create <prompt>**: Generate an image from text.\n"
         "**/novel <title>**: Search for a novel to download.\n"
         "**/movie <title>**: Get information about a movie.\n"
@@ -296,39 +349,41 @@ async def view_db_table(update: Update, context: ContextTypes.DEFAULT_TYPE, tabl
 async def start_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await save_user_to_db(update, context, event_type="Started AI Chat")
     context.user_data['state'] = 'continuous_chat'
-    context.user_data['gemini_history'] = []
+    context.user_data['agent_history'] = []
     chat_keyboard = [[KeyboardButton("End Chat")]]
     reply_markup = ReplyKeyboardMarkup(chat_keyboard, resize_keyboard=True)
-    await update.message.reply_text("You are now in a continuous chat with the AI.\n\nSend your message, or press 'End Chat' to return to the main menu.", reply_markup=reply_markup)
+    await update.message.reply_text("You are now in a continuous chat with the AI agent.\n\nSend your message, or press 'End Chat' to return to the main menu.", reply_markup=reply_markup)
 
 async def end_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop('state', None)
-    context.user_data.pop('gemini_history', None)
+    context.user_data.pop('agent_history', None)
     await update.message.reply_text("Chat ended. Returning to the main menu.")
     await start(update, context)
 
-async def gemini_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt_text: str = None) -> None:
-    if not gemini_model:
-        await update.message.reply_text("AI service is not configured.")
+async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt_text: str = None) -> None:
+    if not agent_router_available():
+        await update.message.reply_text("AI agent service is not configured.")
         return
     is_continuous_chat = context.user_data.get('state') == 'continuous_chat'
-    history = context.user_data.get('gemini_history', []) if is_continuous_chat else []
+    history = context.user_data.get('agent_history', []) if is_continuous_chat else []
     if not prompt_text:
         prompt_text = " ".join(context.args) if not is_continuous_chat else update.message.text
+    prompt_text = (prompt_text or "").strip()
     if not prompt_text:
         await update.message.reply_text("Please provide a prompt.")
         return
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     try:
-        chat_session = gemini_model.start_chat(history=history)
-        response = await asyncio.to_thread(chat_session.send_message, prompt_text)
+        messages = history + [{"role": "user", "content": prompt_text}]
+        response_text = await asyncio.to_thread(agent_router_request, messages)
         if is_continuous_chat:
-            context.user_data['gemini_history'] = chat_session.history
-        safe_reply = escape_markdown(response.text, version=2)
-        await update.message.reply_text(safe_reply, parse_mode=ParseMode.MARKDOWN_V2)
+            context.user_data['agent_history'] = (
+                messages + [{"role": "assistant", "content": response_text}]
+            )[-10:]
+        await update.message.reply_text(response_text)
     except Exception as e:
-        logger.error(f"Gemini command error: {e}")
-        await update.message.reply_text("Sorry, an error occurred with the AI.")
+        logger.error("Agent command error: %s", e)
+        await update.message.reply_text("Sorry, the AI agent could not answer right now.")
 
 async def gmail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
@@ -552,8 +607,8 @@ async def read_text_from_image_command(update: Update, context: ContextTypes.DEF
         await feedback.edit_text("Sorry, an error occurred while processing the image.")
 
 async def summarize_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    if not gemini_model:
-        await update.message.reply_text("AI summarizer is not configured.")
+    if not agent_router_available():
+        await update.message.reply_text("AI agent service is not configured.")
         return
     feedback = await update.message.reply_text("Analyzing link...")
     try:
@@ -563,17 +618,20 @@ async def summarize_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
         if len(article_text) < 100:
             await feedback.edit_text("Couldn't extract enough text to summarize.")
             return
-        await feedback.edit_text("Content extracted. Summarizing with AI...")
+        await feedback.edit_text("Content extracted. Summarizing with the AI agent...")
         prompt = f"Please provide a concise but comprehensive summary of the following article text:\n\n{article_text[:15000]}"
-        ai_response = await asyncio.to_thread(gemini_model.generate_content, prompt)
-        await feedback.edit_text(ai_response.text, parse_mode=ParseMode.MARKDOWN)
+        response_text = await asyncio.to_thread(
+            agent_router_request,
+            [{"role": "user", "content": prompt}],
+        )
+        await feedback.edit_text(response_text)
     except Exception as e:
-        logger.error(f"Summarize URL error: {e}")
+        logger.error("Summarize URL error: %s", e)
         await feedback.edit_text("Sorry, I couldn't read or summarize that URL.")
 
 async def summarize_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not gemini_model:
-        await update.message.reply_text("AI service is not configured.")
+    if not agent_router_available():
+        await update.message.reply_text("AI agent service is not configured.")
         return
     if not update.message.reply_to_message:
         await update.message.reply_text("Please reply to an image or a PDF file with /summarize_file.")
@@ -581,30 +639,40 @@ async def summarize_file_command(update: Update, context: ContextTypes.DEFAULT_T
     replied_message = update.message.reply_to_message
     feedback = await replied_message.reply_text("Processing file...")
     try:
-        text_to_summarize = ""
         if replied_message.photo:
             photo_file = await replied_message.photo[-1].get_file()
-            photo_bytes = await photo_file.download_as_bytearray()
-            image_part = {"mime_type": "image/jpeg", "data": photo_bytes}
-            response = await asyncio.to_thread(gemini_model.generate_content, ["Describe this image in detail.", image_part])
-            text_to_summarize = response.text
+            photo_bytes = bytes(await photo_file.download_as_bytearray())
+            image_content = [{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(photo_bytes).decode("ascii"),
+                },
+            }, {"type": "text", "text": "Describe this image in detail."}]
+            response_text = await asyncio.to_thread(
+                agent_router_request,
+                [{"role": "user", "content": image_content}],
+            )
         elif replied_message.document and replied_message.document.mime_type == 'application/pdf':
             pdf_file = await replied_message.document.get_file()
             pdf_bytes = await pdf_file.download_as_bytearray()
             with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-                text_to_summarize = "".join(page.get_text() for page in doc)
-            if not text_to_summarize.strip():
+                extracted_text = "\n".join(page.get_text() for page in doc)
+            if not extracted_text.strip():
                 await feedback.edit_text("Could not extract any text from this PDF.")
                 return
-            prompt = f"Please provide a detailed summary of the following document:\n\n{text_to_summarize[:15000]}"
-            response = await asyncio.to_thread(gemini_model.generate_content, prompt)
-            text_to_summarize = response.text
+            prompt = f"Please provide a detailed summary of the following document:\n\n{extracted_text[:15000]}"
+            response_text = await asyncio.to_thread(
+                agent_router_request,
+                [{"role": "user", "content": prompt}],
+            )
         else:
             await feedback.edit_text("This command only works on an image or PDF file.")
             return
-        await feedback.edit_text(f"**Summary:**\n\n{text_to_summarize}", parse_mode=ParseMode.MARKDOWN)
+        await feedback.edit_text(f"**Summary:**\n\n{response_text}", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        logger.error(f"File summarization error: {e}")
+        logger.error("File summarization error: %s", e)
         await feedback.edit_text("Sorry, an error occurred while processing the file.")
 
 async def create_image_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str = None) -> None:
@@ -1909,8 +1977,8 @@ async def get_weather(update: Update, context: ContextTypes.DEFAULT_TYPE, city: 
         await update.message.reply_text("Sorry, couldn't fetch the weather.")
 
 async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_to_translate: str = None) -> None:
-    if not gemini_model:
-        await update.message.reply_text("Translate service is not configured.")
+    if not agent_router_available():
+        await update.message.reply_text("AI agent service is not configured.")
         return
     text = text_to_translate or " ".join(context.args)
     if not text or " " not in text.strip():
@@ -1918,8 +1986,15 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         return
     target_lang, text_to_trans = text.strip().split(None, 1)
     prompt = f"Translate the following text to {target_lang}: {text_to_trans}"
-    response = await asyncio.to_thread(gemini_model.generate_content, prompt)
-    await update.message.reply_text(response.text)
+    try:
+        response_text = await asyncio.to_thread(
+            agent_router_request,
+            [{"role": "user", "content": prompt}],
+        )
+        await update.message.reply_text(response_text)
+    except Exception as e:
+        logger.error("Translation error: %s", e)
+        await update.message.reply_text("Sorry, the AI agent could not translate that text.")
 
 async def ping_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     webhook_url = context.job.data.get("webhook_url")
@@ -2260,7 +2335,7 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     text = update.message.text
     if state == 'continuous_chat':
-        await gemini_command(update, context, prompt_text=text)
+        await agent_command(update, context, prompt_text=text)
         return
     popped_state = context.user_data.pop('state')
     if popped_state == 'awaiting_email_address':
@@ -2306,7 +2381,7 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await feedback.edit_text("Failed to send email.")
     else:
         state_handlers = {
-            'awaiting_gemini_prompt': lambda: gemini_command(update, context, prompt_text=text),
+            'awaiting_agent_prompt': lambda: agent_command(update, context, prompt_text=text),
             'awaiting_create_prompt': lambda: create_image_command(update, context, prompt=text),
             'awaiting_novel_title': lambda: search_for_novel(update.message, context, query=text),
             'awaiting_song_name': lambda: search_and_play_song(update, context, song_name=text),
@@ -2341,7 +2416,7 @@ def main() -> None:
     
     cmd_handlers = [
         CommandHandler("start", start), CommandHandler("help", help_command),
-        CommandHandler("gemini", gemini_command), CommandHandler("create", create_image_command),
+        CommandHandler("agent", agent_command), CommandHandler("create", create_image_command),
         CommandHandler("upscale", upscale_image_command), CommandHandler("animate", animate_command),
         CommandHandler("summarize_file", summarize_file_command), CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("play", play_command), CommandHandler("mp4", convert_video_to_audio),

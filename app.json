@@ -36,10 +36,6 @@
       "description": "Numeric Telegram user ID for the bot administrator.",
       "required": true
     },
-    "GEMINI_API_KEY": {
-      "description": "Optional Google Gemini API key for the existing TG_TAG AI features.",
-      "required": false
-    },
     "AGENT_ROUTER_URL": {
       "description": "Optional agent-router messages API URL used by /api/uai.",
       "required": false

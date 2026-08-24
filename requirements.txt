@@ -16,7 +16,6 @@ pydub==0.25.1
 PrettyTable==3.18.0
 
 # AI and API services
-google-generativeai==0.8.6
 openai==2.52.0
 gTTS==2.5.4
 requests==2.34.2
