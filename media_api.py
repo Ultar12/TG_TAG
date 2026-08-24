@@ -136,9 +136,9 @@ def _download_audio_sync(source_url: str, common_options: Mapping[str, Any]) -> 
         options.update(
             {
                 "outtmpl": output_template,
-                "format": "bestaudio/best",
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "postprocessors": [
-                    {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}
+                    {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "128"}
                 ],
             }
         )
@@ -146,9 +146,9 @@ def _download_audio_sync(source_url: str, common_options: Mapping[str, Any]) -> 
             downloader.download([source_url])
         candidates = _downloaded_candidates(directory)
         mp3_candidates = [path for path in candidates if path.lower().endswith(".mp3")]
-        selected = (mp3_candidates or candidates[:1])
-        if not selected:
-            raise MediaAPIError("YouTube returned no usable audio file.")
+        if not mp3_candidates:
+            raise MediaAPIError("YouTube audio conversion did not produce a valid MP3 file; ffmpeg may be missing.")
+        selected = mp3_candidates
         if os.path.getsize(selected[0]) > MAX_API_FILE_BYTES:
             raise MediaAPIError("The downloaded audio is larger than the supported 2 GB limit.")
         return Path(selected[0]).read_bytes()
