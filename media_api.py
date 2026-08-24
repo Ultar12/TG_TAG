@@ -704,6 +704,21 @@ def _uai_error_text(data: Any) -> str:
     return "agent router error"
 
 
+def _uai_agent_endpoint() -> str:
+    base_url = (
+        os.environ.get("AGENT_ROUTER_URL")
+        or os.environ.get("ANTHROPIC_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    if not base_url:
+        return ""
+    if base_url.endswith("/v1/messages"):
+        return base_url
+    if base_url.endswith("/v1"):
+        return f"{base_url}/messages"
+    return f"{base_url}/v1/messages"
+
+
 class UAIHandler(tornado.web.RequestHandler):
     """Direct Scraper-compatible AI endpoint using an agent-router messages API."""
 
@@ -739,8 +754,12 @@ class UAIHandler(tornado.web.RequestHandler):
         if not prompt and not upload:
             raise tornado.web.HTTPError(400, reason="Provide a prompt or attach a file.")
 
-        agent_url = os.environ.get("AGENT_ROUTER_URL", "").strip()
-        agent_key = os.environ.get("AGENT_ROUTER_API_KEY", "").strip()
+        agent_url = _uai_agent_endpoint()
+        agent_key = (
+            os.environ.get("AGENT_ROUTER_API_KEY")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+            or ""
+        ).strip()
         if not agent_url or not agent_key:
             self.set_status(503)
             self.set_header("Content-Type", "application/json")
@@ -759,13 +778,21 @@ class UAIHandler(tornado.web.RequestHandler):
 
                 messages = _uai_agent_messages(history)
                 messages.append({"role": "user", "content": model_content})
-                model = os.environ.get("AGENT_ROUTER_MODEL", "claude-opus-5").strip()
+                model = (
+                    os.environ.get("AGENT_ROUTER_MODEL")
+                    or os.environ.get("ANTHROPIC_MODEL")
+                    or "claude-opus-5"
+                ).strip()
                 max_tokens = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
                 payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
                 headers = {
                     "Authorization": f"Bearer {agent_key}",
                     "x-api-key": agent_key,
-                    "anthropic-version": os.environ.get("AGENT_ROUTER_ANTHROPIC_VERSION", "2023-06-01"),
+                    "anthropic-version": (
+                        os.environ.get("AGENT_ROUTER_ANTHROPIC_VERSION")
+                        or os.environ.get("ANTHROPIC_VERSION")
+                        or "2023-06-01"
+                    ),
                     "Content-Type": "application/json",
                 }
                 response = await asyncio.to_thread(
