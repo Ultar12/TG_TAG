@@ -53,7 +53,7 @@
       "required": false
     },
     "AGENT_ROUTER_MODEL": {
-      "description": "Optional agent-router model. Defaults to claude-opus-5.",
+      "description": "Optional agent-router model. Defaults to claude-opus-4-6; supported examples include claude-opus-4-7 and claude-opus-4-8.",
       "required": false
     },
     "ANTHROPIC_MODEL": {

@@ -60,7 +60,10 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 # AI and agent-router configuration
 AGENT_ROUTER_URL = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("AGENT_ROUTER_URL") or ""
 AGENT_ROUTER_API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("AGENT_ROUTER_API_KEY") or ""
-AGENT_ROUTER_MODEL = os.environ.get("ANTHROPIC_MODEL") or os.environ.get("AGENT_ROUTER_MODEL") or "claude-opus-5"
+DEFAULT_AGENT_ROUTER_MODEL = "claude-opus-4-6"
+AGENT_ROUTER_MODEL = os.environ.get("ANTHROPIC_MODEL") or os.environ.get("AGENT_ROUTER_MODEL") or DEFAULT_AGENT_ROUTER_MODEL
+if AGENT_ROUTER_MODEL == "claude-opus-5":
+    AGENT_ROUTER_MODEL = DEFAULT_AGENT_ROUTER_MODEL
 AGENT_ROUTER_MAX_TOKENS = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
 AGENT_ROUTER_TIMEOUT_SECONDS = float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") # For DALL-E only

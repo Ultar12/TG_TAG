@@ -34,7 +34,8 @@ PLAY_JOBS: dict[str, dict[str, Any]] = {}
 UAI_HISTORIES: dict[str, list[dict[str, Any]]] = {}
 UAI_CHAT_LOCKS: dict[str, asyncio.Lock] = {}
 UAI_MAX_FILE_BYTES = 15 * 1024 * 1024
-UAI_MAX_TEXT_CHARS = 800_000
+UAI_MAX_TEXT_CHARS = 12000
+DEFAULT_AGENT_ROUTER_MODEL = "claude-opus-4-6"
 UAI_HISTORY_FILE_CHARS = 120_000
 UAI_HISTORY_MAX_MESSAGES = 10
 MEDIA_USER_AGENT = (
@@ -858,8 +859,11 @@ class UAIHandler(tornado.web.RequestHandler):
                 model = (
                     os.environ.get("ANTHROPIC_MODEL")
                     or os.environ.get("AGENT_ROUTER_MODEL")
-                    or "claude-opus-5"
+                    or DEFAULT_AGENT_ROUTER_MODEL
                 ).strip()
+                if model == "claude-opus-5":
+                    logger.warning("Unsupported legacy model claude-opus-5; using %s", DEFAULT_AGENT_ROUTER_MODEL)
+                    model = DEFAULT_AGENT_ROUTER_MODEL
                 max_tokens = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
                 payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
                 headers = {
