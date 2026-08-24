@@ -1,2 +1,3 @@
 https://github.com/heroku/heroku-buildpack-apt
+heroku/nodejs
 heroku/python

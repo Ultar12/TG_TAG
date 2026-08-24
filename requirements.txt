@@ -11,7 +11,7 @@ SQLAlchemy==2.0.52
 psycopg2-binary==2.9.12
 
 # Media downloads and processing
-yt-dlp==2026.8.19
+yt-dlp[default]==2026.8.19
 pydub==0.25.1
 PrettyTable==3.18.0
 

@@ -117,6 +117,13 @@ if os.path.isfile(YTDL_COOKIES_FILE) and os.path.getsize(YTDL_COOKIES_FILE) > 0:
 else:
     logger.info("No YouTube cookies file configured; yt-dlp will run without cookies.")
 
+# Current YouTube extraction requires an external JavaScript runtime and EJS
+# challenge scripts. Heroku installs Node.js through the Node buildpack.
+YTDL_COMMON_OPTIONS = {
+    "js_runtimes": {"node": {}},
+    **YTDL_COOKIE_OPTIONS,
+}
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 Base = declarative_base()
@@ -984,7 +991,7 @@ async def youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE, qu
             'quiet': True, 
             'default_search': 'ytsearch5',
             'ignoreerrors': True, # Keep to ignore soft errors
-            **YTDL_COOKIE_OPTIONS,
+            **YTDL_COMMON_OPTIONS,
         }
         # --- END FIX ---
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1020,7 +1027,7 @@ async def search_and_play_song(update: Update, context: ContextTypes.DEFAULT_TYP
             'quiet': True, 
             'default_search': 'ytsearch1',
             'ignoreerrors': True,
-            **YTDL_COOKIE_OPTIONS,
+            **YTDL_COMMON_OPTIONS,
         }
         # --- END FIX ---
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1064,7 +1071,7 @@ async def handle_audio_download(update: Update, context: ContextTypes.DEFAULT_TY
             'noplaylist': True,
             'quiet': True,
             'ignoreerrors': True,
-            **YTDL_COOKIE_OPTIONS,
+            **YTDL_COMMON_OPTIONS,
         }
         # --- END FIX ---
         with yt_dlp.YoutubeDL(audio_opts) as ydl:
@@ -1110,7 +1117,7 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
             'noplaylist': True,
             'quiet': True,
             'ignoreerrors': True,
-            'cookiefile': YTDL_COOKIES_FILE,
+            **YTDL_COMMON_OPTIONS,
             'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4' 
         }
@@ -1513,7 +1520,7 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
             'noplaylist': True,
             'quiet': True,
             'ignoreerrors': True,
-            **YTDL_COOKIE_OPTIONS,
+            **YTDL_COMMON_OPTIONS,
             # Force the best quality by prioritizing 4K, then 2K, then best video/audio combination
             'format': 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4' 
@@ -1523,7 +1530,13 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
             
-        file_path = os.path.join(temp_dir, os.listdir(temp_dir)[0])
+        downloaded_files = [
+            name for name in os.listdir(temp_dir)
+            if os.path.isfile(os.path.join(temp_dir, name))
+        ]
+        if not downloaded_files:
+            raise RuntimeError("yt-dlp produced no output file; YouTube may require cookies or a supported account")
+        file_path = os.path.join(temp_dir, downloaded_files[0])
         await feedback.edit_text("Uploading to Telegram...")
         with open(file_path, 'rb') as f:
             await context.bot.send_video(chat_id=update.effective_chat.id, video=f)
