@@ -247,8 +247,7 @@ async def send_notification_to_admin(context: ContextTypes.DEFAULT_TYPE, user_in
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [KeyboardButton("AI Tools"), KeyboardButton("Media Tools")],
-        [KeyboardButton("Utilities"), KeyboardButton("Help")],
-        [KeyboardButton("Send Suggestion")]
+        [KeyboardButton("Help")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Welcome! How can I help you today?\nSelect an option from the menu below.", reply_markup=reply_markup)
@@ -267,8 +266,7 @@ async def show_ai_tools_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_media_tools_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [KeyboardButton("Play Music / Video")],
-        [KeyboardButton("Download PDF"), KeyboardButton("Search TikTok")],
-        [KeyboardButton("Youtube"), KeyboardButton("Search Movie")],
+        [KeyboardButton("Download PDF"), KeyboardButton("Search Movie")],
         [KeyboardButton("Back to Main Menu")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -296,13 +294,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/create <prompt>**: Generate an image from text.\n"
         "**/novel <title>**: Search for a novel to download.\n"
         "**/movie <title>**: Get information about a movie.\n"
-        "**/tiktoksearch <query>**: Search for TikTok videos.\n"
         "**/ytsearch <query>**: Search for YouTube videos.\n"
         "**/play <song name>**: Search and download a song or video.\n"
         "**/tts <text>**: Convert text to speech.\n"
-        "**/mp4**: Reply to a video to convert it to an MP3 audio file.\n"
-        "**/4k**: Reply to a video to upscale its quality to 4K resolution (Warning: heavy process).\n"
-        "**/gmail**: Send an email (Admin only).\n"
         "**/connect +<number>**: Connect to a WhatsApp account using a pairing code."
     )
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
@@ -1383,12 +1377,10 @@ async def handle_platform_selection(update: Update, context: ContextTypes.DEFAUL
     await query.edit_message_text(f"Send me the {platform} URL.")
 
 # --- TIKTOK DOWNLOAD WITH MULTIPLE API FALLBACKS ---
-async def download_tiktok_image_post(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    """
-    Downloads TikTok content using multiple fallback APIs.
-    Tries: 1) tikwm API 2) ttdownloader API 3) musicaldown API 4) yt-dlp
-    """
-    feedback = await update.message.reply_text("[Processing] TikTok content...")
+async def download_tiktok_image_post(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
+    """Download TikTok content using multiple fallback APIs."""
+    quiet_progress = feedback is not None
+    feedback = feedback or await update.message.reply_text("Downloading...")
     
     # Try API Method 1: tikwm.com
     result = await try_tikwm_api(url, feedback)
@@ -1397,23 +1389,26 @@ async def download_tiktok_image_post(update: Update, context: ContextTypes.DEFAU
         return
     
     # Try API Method 2: ttdownloader.com
-    await feedback.edit_text("[Trying] Alternative API method 2...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Alternative API method 2...")
     result = await try_ttdownloader_api(url, feedback)
     if result:
         await send_tiktok_result(update, context, result, feedback)
         return
     
     # Try API Method 3: musicaldown.com
-    await feedback.edit_text("[Trying] Alternative API method 3...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Alternative API method 3...")
     result = await try_musicaldown_api(url, feedback)
     if result:
         await send_tiktok_result(update, context, result, feedback)
         return
     
     # Fallback: Use yt-dlp for direct video extraction
-    await feedback.edit_text("[Trying] Direct video extraction...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Direct video extraction...")
     try:
-        await download_content_from_url(update, context, url, 'TikTok')
+        await download_content_from_url(update, context, url, 'TikTok', feedback=feedback)
     except Exception as e:
         logger.error(f"All TikTok methods failed: {e}")
         await feedback.edit_text("[Error] TikTok download failed with all methods. The link may be invalid, private, or region-restricted.")
@@ -1582,7 +1577,8 @@ async def send_tiktok_result(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await feedback.edit_text("[Error] Invalid video URL.")
                 return
             
-            await feedback.edit_text("[Downloading] TikTok video...")
+            if not quiet_progress:
+                await feedback.edit_text("[Downloading] TikTok video...")
             try:
                 video_response = requests.get(video_url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
                 
@@ -1614,8 +1610,9 @@ async def send_tiktok_result(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 # --- END TIKTOK DOWNLOAD WITH MULTIPLE API FALLBACKS ---
 
-async def download_content_from_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, platform: str) -> None:
-    feedback = await update.message.reply_text(f"Starting download from {platform}...")
+async def download_content_from_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, platform: str, feedback=None) -> None:
+    quiet_progress = feedback is not None
+    feedback = feedback or await update.message.reply_text("Downloading...")
     temp_dir = os.path.join(DOWNLOAD_DIR, str(uuid.uuid4()))
     os.makedirs(temp_dir)
     try:
@@ -1649,7 +1646,8 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
                 break
         if not file_path:
             raise RuntimeError("yt-dlp produced a video without an audio stream; ffmpeg may be missing")
-        await feedback.edit_text("Uploading to Telegram...")
+        if not quiet_progress:
+            await feedback.edit_text("Uploading to Telegram...")
         with open(file_path, 'rb') as f:
             await context.bot.send_video(chat_id=update.effective_chat.id, video=f)
         await feedback.delete()
@@ -1685,57 +1683,59 @@ def detect_download_platform(url: str) -> str:
 
 
 # --- Router function for manual and automatic downloads ---
-async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
+async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
     """Routes a URL to the correct downloader based on its hostname."""
     platform = context.user_data.pop('platform', None) or detect_download_platform(url)
 
     if platform == 'TikTok':
         # Use the special handler for TikTok photo dumps
-        await download_tiktok_image_post(update, context, url=url)
+        await download_tiktok_image_post(update, context, url=url, feedback=feedback)
     elif platform == 'Pinterest':
         # Pinterest has special handling for images/videos
-        await download_pinterest_content(update, context, url=url)
+        await download_pinterest_content(update, context, url=url, feedback=feedback)
     elif platform in ['Instagram', 'Facebook', 'YouTube', 'General']:
         # Use yt-dlp for all other public URLs it supports.
-        await download_content_from_url(update, context, url=url, platform=platform)
+        await download_content_from_url(update, context, url=url, platform=platform, feedback=feedback)
     else:
         await update.message.reply_text("This link type is not supported for downloading.")
 # --- END Router function ---
 
 # --- PINTEREST DOWNLOAD WITH MULTIPLE API FALLBACKS ---
-async def download_pinterest_content(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    """
-    Downloads Pinterest content using multiple fallback methods.
-    Tries: 1) yt-dlp 2) direct Pinterest API 3) pinterestdownloader 4) manual scraping
-    """
-    feedback = await update.message.reply_text("[Processing] Pinterest content...")
+async def download_pinterest_content(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
+    """Download Pinterest content using multiple fallback methods."""
+    quiet_progress = feedback is not None
+    feedback = feedback or await update.message.reply_text("Downloading...")
     
     # Try Method 1: yt-dlp with Pinterest options
-    await feedback.edit_text("[Trying] Method 1 - yt-dlp...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Method 1 - yt-dlp...")
     result = await try_pinterest_ytdlp(url)
     if result:
-        await send_pinterest_result(update, context, result, feedback)
+        await send_pinterest_result(update, context, result, feedback, quiet_progress=quiet_progress)
         return
     
     # Try Method 2: Direct Pinterest API
-    await feedback.edit_text("[Trying] Method 2 - Direct API...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Method 2 - Direct API...")
     result = await try_pinterest_direct_api(url)
     if result:
-        await send_pinterest_result(update, context, result, feedback)
+        await send_pinterest_result(update, context, result, feedback, quiet_progress=quiet_progress)
         return
     
     # Try Method 3: pinterestdownloader.com
-    await feedback.edit_text("[Trying] Method 3 - Alternative service...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Method 3 - Alternative service...")
     result = await try_pinterest_downloader_service(url)
     if result:
-        await send_pinterest_result(update, context, result, feedback)
+        await send_pinterest_result(update, context, result, feedback, quiet_progress=quiet_progress)
         return
     
     # Try Method 4: Requests-based scraping
-    await feedback.edit_text("[Trying] Method 4 - Manual extraction...")
+    if not quiet_progress:
+        await feedback.edit_text("[Trying] Method 4 - Manual extraction...")
     result = await try_pinterest_manual_scrape(url)
     if result:
-        await send_pinterest_result(update, context, result, feedback)
+        await send_pinterest_result(update, context, result, feedback, quiet_progress=quiet_progress)
         return
     
     await feedback.edit_text("[Error] Pinterest download failed. All methods exhausted. The pin may be private, deleted, or region-restricted.")
@@ -1870,7 +1870,7 @@ async def try_pinterest_manual_scrape(url: str) -> dict:
         logger.error(f"Pinterest manual scrape failed: {e}")
         return None
 
-async def send_pinterest_result(update: Update, context: ContextTypes.DEFAULT_TYPE, result: dict, feedback) -> None:
+async def send_pinterest_result(update: Update, context: ContextTypes.DEFAULT_TYPE, result: dict, feedback, quiet_progress: bool = False) -> None:
     """Send Pinterest result to user"""
     try:
         if result['type'] == 'file':
@@ -1881,7 +1881,8 @@ async def send_pinterest_result(update: Update, context: ContextTypes.DEFAULT_TY
             
             try:
                 if file_ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']:
-                    await feedback.edit_text(f"[Uploading] Pinterest image ({file_size_mb:.2f} MB)...")
+                    if not quiet_progress:
+                        await feedback.edit_text(f"[Uploading] Pinterest image ({file_size_mb:.2f} MB)...")
                     with open(file_path, 'rb') as f:
                         await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="[Pinterest] Image")
                 elif file_ext in ['.mp4', '.webm', '.mov', '.avi']:
@@ -1889,11 +1890,13 @@ async def send_pinterest_result(update: Update, context: ContextTypes.DEFAULT_TY
                         await feedback.edit_text(f"[Error] Video too large ({file_size_mb:.2f} MB). Telegram limit is 50 MB.")
                         shutil.rmtree(temp_dir, ignore_errors=True)
                         return
-                    await feedback.edit_text(f"[Uploading] Pinterest video ({file_size_mb:.2f} MB)...")
+                    if not quiet_progress:
+                        await feedback.edit_text(f"[Uploading] Pinterest video ({file_size_mb:.2f} MB)...")
                     with open(file_path, 'rb') as f:
                         await context.bot.send_video(chat_id=update.effective_chat.id, video=f, caption="[Pinterest] Video")
                 else:
-                    await feedback.edit_text(f"[Uploading] Pinterest file ({file_size_mb:.2f} MB)...")
+                    if not quiet_progress:
+                        await feedback.edit_text(f"[Uploading] Pinterest file ({file_size_mb:.2f} MB)...")
                     with open(file_path, 'rb') as f:
                         await context.bot.send_document(chat_id=update.effective_chat.id, document=f, filename=os.path.basename(file_path))
                 
@@ -1909,7 +1912,8 @@ async def send_pinterest_result(update: Update, context: ContextTypes.DEFAULT_TY
         
         elif result['type'] == 'url':
             media_url = result['url']
-            await feedback.edit_text("[Downloading] from URL...")
+            if not quiet_progress:
+                await feedback.edit_text("[Downloading] from URL...")
             
             media_response = requests.get(media_url, timeout=30)
             if media_response.status_code == 200:
@@ -2329,7 +2333,8 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         auto_url = extract_first_http_url(update.message.text)
         if auto_url:
             await save_user_to_db(update, context, event_type="Automatic media download")
-            await handle_media_download(update, context, url=auto_url)
+            feedback = await update.message.reply_text("Downloading...")
+            await handle_media_download(update, context, url=auto_url, feedback=feedback)
             return
         await save_user_to_db(update, context)
         return
@@ -2430,10 +2435,9 @@ def main() -> None:
     
     menu_button_texts = {
         "AI Tools": show_ai_tools_menu, "Media Tools": show_media_tools_menu,
-        "Utilities": show_utilities_menu, "Help": help_command,
+         "Help": help_command,
         "Back to Main Menu": start, "End Chat": end_chat,
         "Chat with AI": start_ai_chat, "Tell a Joke": get_joke, "Ask a Riddle": get_riddle,
-        "Send Suggestion": lambda u,c: prompt_for_input(u,c,'awaiting_suggestion', "Please type your suggestion...", "Pressed 'Suggestion'"),
         "Create Image": lambda u,c: prompt_for_input(u,c,'awaiting_create_prompt', "Describe the image...", "Pressed 'Create Image'"),
         "Read Text from Image": lambda u,c: u.message.reply_text("Reply to an image with /readtext."),
         "Text to Speech": lambda u,c: prompt_for_input(u,c,'awaiting_tts_text', "What text to speak?", "Pressed 'TTS'"),
@@ -2444,14 +2448,6 @@ def main() -> None:
         "Play Music / Video": lambda u,c: prompt_for_input(u,c,'awaiting_song_name', "What song or video?", "Pressed 'Play'"),
         "Download PDF": lambda u,c: prompt_for_input(u,c,'awaiting_novel_title', "What PDF/novel to search for?", "Pressed 'Download PDF'"),
         "Search Movie": lambda u,c: prompt_for_input(u,c,'awaiting_movie_title', "What movie?", "Pressed 'Search Movie'"),
-        "Search TikTok": lambda u,c: prompt_for_input(u,c,'awaiting_tiktok_query', "Search TikTok for?", "Pressed 'Search TikTok'"),
-        "Youtube": lambda u,c: prompt_for_input(u,c,'awaiting_ytsearch_query', "Search YouTube for?", "Pressed 'Youtube'"),
-        "Weather": lambda u,c: prompt_for_input(u,c,'awaiting_city', "Enter a city name.", "Pressed 'Weather'"),
-        "Crypto Prices": lambda u,c: prompt_for_input(u,c,'awaiting_crypto_symbols', "Enter coin IDs (e.g., bitcoin,ethereum).", "Pressed 'Crypto'"),
-        "Translate Text": lambda u,c: prompt_for_input(u,c,'awaiting_translation_text', "Format: <language> <text>", "Pressed 'Translate'"),
-        "Convert Video to Audio": lambda u,c: u.message.reply_text("Reply to a video with /mp4."),
-        "Take Screenshot": lambda u,c: prompt_for_input(u,c,'awaiting_screenshot_url', "Enter the website URL.", "Pressed 'Take Screenshot'"),
-        "Send Email (Admin)": gmail_command,
     }
     
     msg_handlers = [MessageHandler(filters.TEXT & filters.Regex(f"^{re.escape(p)}$"), f) for p, f in menu_button_texts.items()]
