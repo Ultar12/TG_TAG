@@ -1,0 +1,75 @@
+{
+  "name": "TG_TAG Telegram Bot",
+  "description": "A multi-purpose Telegram bot with AI, media, utility, and database features.",
+  "repository": "https://github.com/ultar1/TG_TAG",
+  "keywords": [
+    "telegram",
+    "telegram-bot",
+    "python",
+    "ai",
+    "media"
+  ],
+  "buildpacks": [
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-apt"
+    },
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Telegram bot token from BotFather.",
+      "required": true
+    },
+    "DATABASE_URL": {
+      "description": "PostgreSQL connection URL.",
+      "required": true
+    },
+    "ADMIN_ID": {
+      "description": "Numeric Telegram user ID for the bot administrator.",
+      "required": true
+    },
+    "GEMINI_API_KEY": {
+      "description": "Optional Google Gemini API key.",
+      "required": false
+    },
+    "OPENAI_API_KEY": {
+      "description": "Optional OpenAI API key for image generation.",
+      "required": false
+    },
+    "REPLICATE_API_TOKEN": {
+      "description": "Optional Replicate API token.",
+      "required": false
+    },
+    "STABILITY_API_KEY": {
+      "description": "Optional Stability AI API key.",
+      "required": false
+    },
+    "OPENWEATHER_API_KEY": {
+      "description": "Optional OpenWeather API key.",
+      "required": false
+    },
+    "SCREENSHOT_API_KEY": {
+      "description": "Optional screenshot API key.",
+      "required": false
+    },
+    "TMDB_API_KEY": {
+      "description": "Optional TMDB API key.",
+      "required": false
+    },
+    "GMAIL_ADDRESS": {
+      "description": "Optional Gmail address for the admin email feature.",
+      "required": false
+    },
+    "GMAIL_APP_PASSWORD": {
+      "description": "Optional Gmail app password.",
+      "required": false
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1
+    }
+  }
+}
