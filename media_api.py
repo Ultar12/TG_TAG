@@ -904,7 +904,9 @@ class UAIHandler(tornado.web.RequestHandler):
                 response = None
                 response_data = {}
                 reply = ""
+                last_endpoint = ""
                 for endpoint in _uai_agent_endpoints():
+                    last_endpoint = endpoint
                     candidate_response = await asyncio.to_thread(
                         requests.post,
                         endpoint,
@@ -932,6 +934,19 @@ class UAIHandler(tornado.web.RequestHandler):
                     )
 
                 if response is None or response.status_code < 200 or response.status_code >= 300:
+                    if response is not None and response.status_code in {401, 403}:
+                        logger.warning(
+                            "Agent router authorization failed at %s with HTTP %s",
+                            urlparse(last_endpoint).netloc or "configured endpoint",
+                            response.status_code,
+                        )
+                        self.set_status(502)
+                        self.set_header("Content-Type", "application/json")
+                        self.write({
+                            "success": False,
+                            "error": "AI agent authorization failed. Replace ANTHROPIC_AUTH_TOKEN.",
+                        })
+                        return
                     raise RuntimeError("Agent router request failed")
                 if not reply:
                     logger.warning(
