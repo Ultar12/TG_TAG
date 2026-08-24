@@ -103,10 +103,32 @@ def _base_ytdl_options(common_options: Mapping[str, Any]) -> dict[str, Any]:
     return options
 
 
+def _normalize_quality_height(value: Any, default: int = 2160) -> int:
+    value_text = str(value or "").strip().lower()
+    aliases = {
+        "4k": 2160,
+        "2160p": 2160,
+        "2k": 1440,
+        "1440p": 1440,
+        "hd": 1080,
+        "1080p": 1080,
+        "720p": 720,
+        "720": 720,
+    }
+    if value_text in aliases:
+        return aliases[value_text]
+    try:
+        height = int(value_text)
+    except (TypeError, ValueError):
+        return default
+    return max(144, min(height, 2160))
+
+
 def _download_video_file_sync(
     source_url: str,
     common_options: Mapping[str, Any],
     require_audio: bool = True,
+    max_height: int = 2160,
 ) -> tuple[str, str]:
     directory = tempfile.mkdtemp(prefix="tg_tag_api_video_")
     try:
@@ -115,7 +137,7 @@ def _download_video_file_sync(
         options.update(
             {
                 "outtmpl": os.path.join(directory, "%(title).120B.%(ext)s"),
-                "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
                 "merge_output_format": "mp4",
                 "recodevideo": "mp4",
             }
@@ -246,9 +268,12 @@ class DownloadHandler(_BaseHandler):
 
     async def post(self) -> None:
         body = self._json_body()
-        await self._handle(body.get("url") or self.get_body_argument("url", default=""))
+        await self._handle(
+            body.get("url") or self.get_body_argument("url", default=""),
+            body.get("quality", ""),
+        )
 
-    async def _handle(self, raw_url: Any) -> None:
+    async def _handle(self, raw_url: Any, requested_quality: Any = "") -> None:
         url = _safe_url(raw_url)
         host = urlparse(url).netloc.lower()
         try:
@@ -266,11 +291,14 @@ class DownloadHandler(_BaseHandler):
                     self._write_media(content, "tiktok-video.mp4", "video/mp4")
                     return
 
+            if not requested_quality:
+                requested_quality = self.get_query_argument("quality", default="")
             video_path, temp_dir = await asyncio.to_thread(
                 _download_video_file_sync,
                 url,
                 self.common_options,
                 "youtube.com" in host or "youtu.be" in host,
+                _normalize_quality_height(requested_quality),
             )
             try:
                 await self._stream_file(video_path, "downloaded-video.mp4", "video/mp4")
@@ -300,7 +328,11 @@ class PlayHandler(_BaseHandler):
             mode = str(body.get("mode") or "audio").strip().lower()
             if mode in {"video", "vla", "mp4"}:
                 video_path, temp_dir = await asyncio.to_thread(
-                    _download_video_file_sync, track["url"], self.common_options, True
+                    _download_video_file_sync,
+                    track["url"],
+                    self.common_options,
+                    True,
+                    _normalize_quality_height(body.get("quality"), default=2160),
                 )
                 try:
                     self.set_header("X-Track-Title", track["title"])
