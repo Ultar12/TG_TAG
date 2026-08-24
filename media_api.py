@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 import tornado.web
@@ -246,7 +246,7 @@ class DownloadHandler(_BaseHandler):
                         return
                     content, caption = payload
                     if caption:
-                        self.set_header("X-Media-Caption", caption.encode("utf-8").hex())
+                        self.set_header("X-Media-Caption", quote(caption, safe=""))
                     self._write_media(content, "tiktok-video.mp4", "video/mp4")
                     return
 
