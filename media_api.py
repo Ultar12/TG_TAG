@@ -183,14 +183,21 @@ def _download_pinterest_sync(source_url: str) -> tuple[str, Any]:
             raise MediaAPIError("Pinterest returned an empty video file.")
         if len(content) > MAX_API_FILE_BYTES:
             raise MediaAPIError("The Pinterest video is larger than the supported 2 GB limit.")
-        return "video", content
+
+        with tempfile.TemporaryDirectory(prefix="tg_tag_pinterest_probe_") as directory:
+            probe_path = os.path.join(directory, "pinterest-video.mp4")
+            Path(probe_path).write_bytes(content)
+            if _file_is_mp4(probe_path):
+                return "video", content
+
+        raise MediaAPIError("Pinterest returned a video in a format that is not a valid MP4.")
 
     usable_images = [
         value for value in image_urls
         if not re.search(r"/(?:75x75|236x|474x|564x|60x60)/", value, re.IGNORECASE)
     ]
     if usable_images:
-        return "images", usable_images[:20]
+        return "images", usable_images[:1]
 
     raise MediaAPIError(
         "Pinterest returned no public image or video URL. The pin may be private, deleted, or login-gated."
