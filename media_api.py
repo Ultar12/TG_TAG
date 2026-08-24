@@ -877,12 +877,13 @@ class UAIHandler(tornado.web.RequestHandler):
                     ),
                     "anthropic-dangerous-direct-browser-access": "true",
                     "x-app": "cli",
-                    "X-Stainless-Lang": "python",
+                    "X-Stainless-Lang": "node",
                     "X-Stainless-Package-Version": "0.32.1",
-                    "X-Stainless-OS": "linux",
-                    "X-Stainless-Arch": "amd64",
-                    "X-Stainless-Runtime": "Python",
-                    "X-Stainless-Runtime-Version": "3.11",
+                    "X-Stainless-OS": "MacOS",
+                    "X-Stainless-Arch": "arm64",
+                    "X-Stainless-Runtime": "Node.js",
+                    "X-Stainless-Runtime-Version": "v18.19.0",
+                    "Accept": "application/json, text/plain, */*",
                     "Content-Type": "application/json",
                 }
                 response = await asyncio.to_thread(
