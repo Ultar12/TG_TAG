@@ -17,7 +17,7 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-COPY bot.py ./
+COPY bot.py media_api.py ./
 
 RUN mkdir -p /app/downloads
 

@@ -28,7 +28,17 @@ web: python bot.py
 worker: python bot.py
 ```
 
-Use the `web` process for this Telegram bot because it runs Telegram webhooks on Heroku. The dedicated ffmpeg buildpack installs ffmpeg, while the repository’s `Aptfile` installs Tesseract OCR.
+Use the `web` process for this Telegram bot because it runs Telegram webhooks on Heroku. The dedicated Active Storage Preview buildpack installs ffmpeg, while the repository’s `Aptfile` installs Tesseract OCR.
+
+The same web process exposes the scraper-compatible media API:
+
+```text
+GET  /api/download?url=<public-media-url>
+POST /api/play-hook   {"query": "artist song"}
+POST /api/play        {"query": "artist song"}
+```
+
+If `MEDIA_API_TOKEN` is configured, send it as either `Authorization: Bearer <token>` or `X-API-Key: <token>`. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/play-hook` and `/api/play` search YouTube and return an MP3 with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
 
 ## Environment variables
 

@@ -37,6 +37,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.types import BigInteger
 import yt_dlp
+from media_api import run_combined_webhook
 
 from prettytable import PrettyTable
 
@@ -2391,11 +2392,14 @@ def main() -> None:
     if webhook_base_url:
         webhook_url = webhook_base_url.rstrip("/") + f"/{BOT_TOKEN}"
         logger.info("Running in webhook mode on port %s.", port)
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=BOT_TOKEN,
+        run_combined_webhook(
+            application=application,
+            bot_token=BOT_TOKEN,
             webhook_url=webhook_url,
+            port=port,
+            common_options=YTDL_COMMON_OPTIONS,
+            api_token=os.environ.get("MEDIA_API_TOKEN"),
+            webhook_secret=os.environ.get("WEBHOOK_SECRET_TOKEN"),
         )
     else:
         logger.info("Running in polling mode.")
