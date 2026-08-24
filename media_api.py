@@ -113,7 +113,12 @@ def _pinterest_media_candidates(html: str, page_url: str) -> tuple[list[str], li
         if cleaned:
             image_urls.append(cleaned)
 
-    for match in PINTEREST_PINIMG_RE.findall(html):
+    searchable_html = (
+        html
+        .replace("\\u002F", "/")
+        .replace("\\/", "/")
+    )
+    for match in PINTEREST_PINIMG_RE.findall(searchable_html):
         cleaned = _clean_pinterest_url(match, page_url)
         if not cleaned:
             continue
@@ -165,8 +170,11 @@ def _download_pinterest_sync(source_url: str) -> tuple[str, Any]:
                 }
                 with yt_dlp.YoutubeDL(options) as downloader:
                     downloader.download([preferred_video])
+                source_path = os.path.join(directory, "pinterest-video.source")
+                raw_output_path = os.path.join(directory, "pinterest-video.raw")
                 output_path = os.path.join(directory, "pinterest-video.mp4")
-                _copy_valid_download(directory, output_path, require_audio=False)
+                _copy_pinterest_source(directory, raw_output_path)
+                _normalize_pinterest_video(raw_output_path, output_path)
                 return "video", Path(output_path).read_bytes()
             finally:
                 shutil.rmtree(directory, ignore_errors=True)
@@ -184,13 +192,12 @@ def _download_pinterest_sync(source_url: str) -> tuple[str, Any]:
         if len(content) > MAX_API_FILE_BYTES:
             raise MediaAPIError("The Pinterest video is larger than the supported 2 GB limit.")
 
-        with tempfile.TemporaryDirectory(prefix="tg_tag_pinterest_probe_") as directory:
-            probe_path = os.path.join(directory, "pinterest-video.mp4")
-            Path(probe_path).write_bytes(content)
-            if _file_is_mp4(probe_path):
-                return "video", content
-
-        raise MediaAPIError("Pinterest returned a video in a format that is not a valid MP4.")
+        with tempfile.TemporaryDirectory(prefix="tg_tag_pinterest_video_") as directory:
+            source_path = os.path.join(directory, "pinterest-video.source")
+            output_path = os.path.join(directory, "pinterest-video.mp4")
+            Path(source_path).write_bytes(content)
+            _normalize_pinterest_video(source_path, output_path)
+            return "video", Path(output_path).read_bytes()
 
     usable_images = [
         value for value in image_urls
@@ -244,6 +251,67 @@ def _file_is_mp4(path: str) -> bool:
         return False
 
 
+def _run_ffmpeg(args: list[str], timeout: int = 600) -> None:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostdin", "-y", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise MediaAPIError("ffmpeg is not installed on the TG_TAG server.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MediaAPIError("Pinterest video conversion timed out on the TG_TAG server.") from exc
+    except OSError as exc:
+        raise MediaAPIError(f"ffmpeg could not start: {exc}") from exc
+
+    if result.returncode == 0:
+        return
+
+    diagnostics = " ".join(
+        line.strip()
+        for line in result.stderr.splitlines()
+        if line.strip()
+    )[-1200:]
+    raise MediaAPIError(
+        f"Pinterest video conversion failed with code {result.returncode}: "
+        f"{diagnostics or 'no diagnostic output'}"
+    )
+
+
+def _normalize_pinterest_video(input_path: str, output_path: str) -> str:
+    _run_ffmpeg(
+        [
+            "-fflags", "+genpts",
+            "-i", input_path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-map_metadata", "-1",
+            "-sn",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-shortest",
+            "-movflags", "+faststart",
+            output_path,
+        ],
+    )
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) < 1024:
+        raise MediaAPIError("Pinterest conversion produced an empty MP4 file.")
+    if not _file_is_mp4(output_path):
+        raise MediaAPIError("Pinterest conversion did not produce a valid MP4 file.")
+    return output_path
+
+
 def _downloaded_candidates(directory: str) -> list[str]:
     return sorted(
         [
@@ -276,6 +344,18 @@ def _copy_valid_download(directory: str, output_path: str, require_audio: bool) 
 
     if os.path.getsize(selected) > MAX_API_FILE_BYTES:
         raise MediaAPIError("The downloaded file is larger than the supported 2 GB limit.")
+    shutil.copyfile(selected, output_path)
+    return output_path
+
+
+def _copy_pinterest_source(directory: str, output_path: str) -> str:
+    candidates = _downloaded_candidates(directory)
+    if not candidates:
+        raise MediaAPIError("Pinterest video download returned no source file.")
+
+    selected = candidates[0]
+    if os.path.getsize(selected) > MAX_API_FILE_BYTES:
+        raise MediaAPIError("The Pinterest video is larger than the supported 2 GB limit.")
     shutil.copyfile(selected, output_path)
     return output_path
 
