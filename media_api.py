@@ -783,8 +783,8 @@ def _uai_error_text(data: Any) -> str:
 
 def _uai_agent_endpoint() -> str:
     base_url = (
-        os.environ.get("AGENT_ROUTER_URL")
-        or os.environ.get("ANTHROPIC_BASE_URL")
+        os.environ.get("ANTHROPIC_BASE_URL")
+        or os.environ.get("AGENT_ROUTER_URL")
         or ""
     ).strip().rstrip("/")
     if not base_url:
@@ -833,8 +833,8 @@ class UAIHandler(tornado.web.RequestHandler):
 
         agent_url = _uai_agent_endpoint()
         agent_key = (
-            os.environ.get("AGENT_ROUTER_API_KEY")
-            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+            os.environ.get("ANTHROPIC_AUTH_TOKEN")
+            or os.environ.get("AGENT_ROUTER_API_KEY")
             or ""
         ).strip()
         if not agent_url or not agent_key:
@@ -856,8 +856,8 @@ class UAIHandler(tornado.web.RequestHandler):
                 messages = _uai_agent_messages(history)
                 messages.append({"role": "user", "content": model_content})
                 model = (
-                    os.environ.get("AGENT_ROUTER_MODEL")
-                    or os.environ.get("ANTHROPIC_MODEL")
+                    os.environ.get("ANTHROPIC_MODEL")
+                    or os.environ.get("AGENT_ROUTER_MODEL")
                     or "claude-opus-5"
                 ).strip()
                 max_tokens = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
@@ -900,8 +900,11 @@ class UAIHandler(tornado.web.RequestHandler):
                 reply = _uai_clean_text(_uai_extract_reply(response_data), UAI_MAX_TEXT_CHARS)
                 if not reply:
                     logger.warning(
-                        "Agent router returned HTTP %s without text; response shape: %s",
+                        "Agent router returned HTTP %s without text; content-type=%s content-length=%s body-bytes=%s response shape: %s",
                         response.status_code,
+                        response.headers.get("Content-Type", ""),
+                        response.headers.get("Content-Length", ""),
+                        len(response.content or b""),
                         _uai_shape(response_data),
                     )
                     raise RuntimeError("Agent router returned no text")
