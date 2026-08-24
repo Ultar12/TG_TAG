@@ -167,7 +167,7 @@ def _download_video_file_sync(
         options.update(
             {
                 "outtmpl": os.path.join(directory, "%(title).120B.%(ext)s"),
-                "format": f"bestvideo[ext=mp4][height<={max_height}]+bestaudio[ext=m4a]/bestvideo[height<={max_height}]+bestaudio/best[ext=mp4][height<={max_height}]/best[height<={max_height}]",
+                "format": f"best[ext=mp4][height<={max_height}]/bestvideo[ext=mp4][height<={max_height}]+bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]",
                 "merge_output_format": "mp4",
             }
         )
