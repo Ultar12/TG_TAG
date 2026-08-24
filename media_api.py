@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -18,6 +19,9 @@ from urllib.parse import quote, urlparse
 import requests
 import tornado.web
 from tornado.httpserver import HTTPServer
+import google.generativeai as genai
+import pymupdf as fitz
+from PIL import Image
 import yt_dlp
 from telegram import Update
 from telegram.ext import Application
@@ -27,6 +31,12 @@ MAX_API_FILE_BYTES = 2 * 1024 * 1024 * 1024
 PLAY_JOB_TTL_SECONDS = 1800
 PLAY_JOB_MAX_ACTIVE = 2
 PLAY_JOBS: dict[str, dict[str, Any]] = {}
+UAI_HISTORIES: dict[str, list[dict[str, Any]]] = {}
+UAI_CHAT_LOCKS: dict[str, asyncio.Lock] = {}
+UAI_MAX_FILE_BYTES = 15 * 1024 * 1024
+UAI_MAX_TEXT_CHARS = 800_000
+UAI_HISTORY_FILE_CHARS = 120_000
+UAI_HISTORY_MAX_MESSAGES = 10
 MEDIA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -572,6 +582,174 @@ def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
     return "video", (media_response.content, caption)
 
 
+def _uai_clean_text(value: Any, limit: int = UAI_MAX_TEXT_CHARS) -> str:
+    text = str(value or "")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+    return text[:limit].strip()
+
+
+def _uai_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _uai_history_key(value: Any) -> str:
+    key = _uai_clean_text(value, 200)
+    return key or "default_chat"
+
+
+def _uai_gemini_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for item in history:
+        role = "model" if item.get("role") == "assistant" else "user"
+        text = _uai_clean_text(item.get("text"), UAI_HISTORY_FILE_CHARS)
+        if text:
+            converted.append({"role": role, "parts": [{"text": text}]})
+    return converted
+
+
+def _uai_file_content(upload: dict[str, Any], prompt: str) -> tuple[Any, str]:
+    data = upload.get("body") or b""
+    filename = _uai_clean_text(upload.get("filename") or "file.bin", 160)
+    content_type = str(upload.get("content_type") or "application/octet-stream").lower()
+    if len(data) > UAI_MAX_FILE_BYTES:
+        raise tornado.web.HTTPError(413, reason="Attached file exceeds the 15 MB limit.")
+
+    if content_type.startswith("image/"):
+        try:
+            with Image.open(io.BytesIO(data)) as source:
+                image = source.convert("RGB")
+                image.thumbnail((1200, 1200))
+                image.load()
+            image_bytes = io.BytesIO()
+            image.save(image_bytes, format="JPEG", quality=82, optimize=True)
+            image_part = {
+                "mime_type": "image/jpeg",
+                "data": image_bytes.getvalue(),
+            }
+            text = _uai_clean_text(prompt or f"Analyze the attached image: {filename}.", UAI_HISTORY_FILE_CHARS)
+            return [image_part, text], f"[Attached image: {filename}] {text}"
+        except Exception as exc:
+            raise tornado.web.HTTPError(400, reason="The attached image could not be processed.") from exc
+
+    if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+        try:
+            with fitz.open(stream=data, filetype="pdf") as document:
+                extracted = "\\n".join(page.get_text() for page in document)
+            extracted = _uai_clean_text(extracted, UAI_HISTORY_FILE_CHARS)
+            text = (
+                f"[Attached PDF: {filename}]\\n```\\n{extracted}\\n```\\n\\n"
+                f"{_uai_clean_text(prompt or 'Analyze this document.', UAI_HISTORY_FILE_CHARS)}"
+            )
+            return text, text
+        except Exception as exc:
+            raise tornado.web.HTTPError(400, reason="The attached PDF could not be read.") from exc
+
+    if b"\x00" in data:
+        text = (
+            f"[Attached binary file: {filename}; the raw contents were not interpreted as text.]\\n\\n"
+            f"{_uai_clean_text(prompt or 'Explain what can be inferred from this file name and type.', UAI_HISTORY_FILE_CHARS)}"
+        )
+        return text, text
+
+    decoded = data.decode("utf-8", errors="replace")
+    decoded = _uai_clean_text(decoded, UAI_HISTORY_FILE_CHARS)
+    text = (
+        f"[Attached file: {filename}]\\n```\\n{decoded}\\n```\\n\\n"
+        f"{_uai_clean_text(prompt or 'Analyze this file.', UAI_HISTORY_FILE_CHARS)}"
+    )
+    return text, text
+
+
+class UAIHandler(tornado.web.RequestHandler):
+    """Direct AI endpoint for the WhatsApp/other bot plugin.
+
+    Compatible request fields:
+      multipart/form-data: prompt, chatId, resetHistory, optional file
+      application/json: prompt, chatId, resetHistory
+    """
+
+    def _authorized(self) -> bool:
+        expected = os.environ.get("UAI_API_TOKEN", "").strip()
+        if not expected:
+            return True
+        supplied = self.request.headers.get("X-UAI-Token", "")
+        return supplied == expected
+
+    def _request_values(self) -> tuple[str, str, bool, dict[str, Any] | None]:
+        content_type = self.request.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type == "application/json":
+            try:
+                body = json.loads(self.request.body.decode("utf-8")) if self.request.body else {}
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise tornado.web.HTTPError(400, reason="Request body must be valid JSON.") from exc
+            if not isinstance(body, dict):
+                raise tornado.web.HTTPError(400, reason="Request body must be an object.")
+            return (
+                _uai_clean_text(body.get("prompt"), UAI_HISTORY_FILE_CHARS),
+                _uai_history_key(body.get("chatId")),
+                _uai_truthy(body.get("resetHistory")),
+                None,
+            )
+
+        prompt = _uai_clean_text(self.get_body_argument("prompt", default=""), UAI_HISTORY_FILE_CHARS)
+        chat_id = _uai_history_key(self.get_body_argument("chatId", default="default_chat"))
+        reset_history = _uai_truthy(self.get_body_argument("resetHistory", default="false"))
+        uploads = self.request.files.get("file", [])
+        upload = uploads[0] if uploads else None
+        return prompt, chat_id, reset_history, upload
+
+    async def post(self) -> None:
+        if not self._authorized():
+            raise tornado.web.HTTPError(401, reason="Invalid AI API token.")
+
+        prompt, chat_id, reset_history, upload = self._request_values()
+        if not prompt and not upload:
+            raise tornado.web.HTTPError(400, reason="Provide a prompt or attach a file.")
+        if not os.environ.get("GEMINI_API_KEY", "").strip():
+            self.set_status(503)
+            self.set_header("Content-Type", "application/json")
+            self.write({"success": False, "error": "AI service is not configured."})
+            return
+
+        lock = UAI_CHAT_LOCKS.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            try:
+                history = [] if reset_history else list(UAI_HISTORIES.get(chat_id, []))
+                if upload:
+                    model_content, history_text = await asyncio.to_thread(
+                        _uai_file_content,
+                        upload,
+                        prompt,
+                    )
+                else:
+                    model_content = prompt
+                    history_text = prompt
+
+                model_name = os.environ.get("UAI_GEMINI_MODEL", "gemini-1.5-flash").strip()
+                model = genai.GenerativeModel(model_name)
+                chat = model.start_chat(history=_uai_gemini_history(history))
+                response = await asyncio.to_thread(chat.send_message, model_content)
+                reply = _uai_clean_text(getattr(response, "text", ""), UAI_MAX_TEXT_CHARS)
+                if not reply:
+                    raise RuntimeError("AI provider returned an empty response")
+
+                new_history = history + [
+                    {"role": "user", "text": _uai_clean_text(history_text, UAI_HISTORY_FILE_CHARS)},
+                    {"role": "assistant", "text": reply},
+                ]
+                UAI_HISTORIES[chat_id] = new_history[-UAI_HISTORY_MAX_MESSAGES:]
+                self.set_status(200)
+                self.set_header("Content-Type", "application/json")
+                self.write({"success": True, "text": reply})
+            except tornado.web.HTTPError:
+                raise
+            except Exception:
+                logger.exception("Direct /api/uai request failed")
+                self.set_status(502)
+                self.set_header("Content-Type", "application/json")
+                self.write({"success": False, "error": "AI request failed. Please try again."})
+
+
 class _BaseHandler(tornado.web.RequestHandler):
     def initialize(self, common_options: Mapping[str, Any]) -> None:
         self.common_options = common_options
@@ -815,6 +993,7 @@ async def _run_combined_webhook(
         [
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
+            (r"/api/uai/?", UAIHandler),
             (r"/api/play/([a-f0-9]{32})/result/?", PlayJobResultHandler, {"common_options": common_options}),
             (r"/api/play/([a-f0-9]{32})/?", PlayJobStatusHandler, {"common_options": common_options}),
             (r"/api/play-hook/?", PlayJobCreateHandler, {"common_options": common_options}),

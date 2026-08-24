@@ -37,7 +37,15 @@
       "required": true
     },
     "GEMINI_API_KEY": {
-      "description": "Optional Google Gemini API key.",
+      "description": "Optional Google Gemini API key used by the direct /api/uai endpoint and existing AI features.",
+      "required": false
+    },
+    "UAI_GEMINI_MODEL": {
+      "description": "Optional Gemini model name for /api/uai. Defaults to gemini-1.5-flash.",
+      "required": false
+    },
+    "UAI_API_TOKEN": {
+      "description": "Optional shared token for protecting /api/uai. The plugin sends it as X-UAI-Token when configured.",
       "required": false
     },
     "OPENAI_API_KEY": {
