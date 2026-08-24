@@ -42,7 +42,11 @@ from prettytable import PrettyTable
 
 # Load environment variables from .env file for local development
 from dotenv import load_dotenv
-load_dotenv()
+from pathlib import Path
+
+# Load the repository-local .env for local development and dashboard deployments
+# that include the tracked file. Platform config vars still take precedence.
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 # --- Configuration ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -66,11 +70,25 @@ SCREENSHOT_API_KEY = os.environ.get("SCREENSHOT_API_KEY")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 
 # --- Initial Checks ---
-if not all([BOT_TOKEN, DATABASE_URL, ADMIN_ID]):
-    logger.critical("Critical environment variables are missing. Exiting.")
+missing_required = [
+    name for name, value in {
+        "BOT_TOKEN": BOT_TOKEN,
+        "ADMIN_ID": ADMIN_ID,
+    }.items() if not value
+]
+if missing_required:
+    logger.critical("Missing required environment variables: %s. Exiting.", ", ".join(missing_required))
     sys.exit(1)
-else:
+
+try:
     ADMIN_ID = int(ADMIN_ID)
+except (TypeError, ValueError):
+    logger.critical("ADMIN_ID must be a numeric Telegram user ID. Exiting.")
+    sys.exit(1)
+
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///tg_tag.db"
+    logger.warning("DATABASE_URL is not set; using ephemeral SQLite database at tg_tag.db.")
 
 # --- API Configurations ---
 try:
