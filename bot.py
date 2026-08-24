@@ -124,6 +124,27 @@ YTDL_COMMON_OPTIONS = {
     **YTDL_COOKIE_OPTIONS,
 }
 
+VIDEO_FORMAT_SELECTOR = (
+    "bestvideo[height<=1080]+bestaudio/"
+    "best[height<=1080]/"
+    "best"
+)
+
+async def has_audio_stream(file_path: str) -> bool:
+    """Return whether ffprobe detects at least one audio stream."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name", "-of", "csv=p=0", file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await process.communicate()
+        return process.returncode == 0 and bool(stdout.strip())
+    except (FileNotFoundError, OSError):
+        logger.error("ffprobe is not installed; cannot verify audio streams.")
+        return False
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 Base = declarative_base()
@@ -1118,7 +1139,7 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
             'quiet': True,
             'ignoreerrors': True,
             **YTDL_COMMON_OPTIONS,
-            'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': VIDEO_FORMAT_SELECTOR,
             'merge_output_format': 'mp4' 
         }
         
@@ -1126,12 +1147,26 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
         with yt_dlp.YoutubeDL(ydl_opts) as ydl_dl:
             ydl_dl.download([video_id])
             
-        downloaded_files = os.listdir(temp_dir)
+        downloaded_files = [
+            os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
+            if os.path.isfile(os.path.join(temp_dir, name))
+            and not name.endswith((".part", ".ytdl"))
+        ]
         if not downloaded_files:
             await query.edit_message_text("Download failed: No file found.")
             return
 
-        video_path = os.path.join(temp_dir, downloaded_files[0])
+        video_path = None
+        for candidate in downloaded_files:
+            if await has_audio_stream(candidate):
+                video_path = candidate
+                break
+        if not video_path:
+            await query.edit_message_text(
+                "Download failed: no audio stream was found. Please retry after ffmpeg is installed."
+            )
+            return
+
         file_size_bytes = os.path.getsize(video_path)
         file_size_mb = file_size_bytes / (1024 * 1024)
         
@@ -1522,7 +1557,7 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
             'ignoreerrors': True,
             **YTDL_COMMON_OPTIONS,
             # Force the best quality by prioritizing 4K, then 2K, then best video/audio combination
-            'format': 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': VIDEO_FORMAT_SELECTOR,
             'merge_output_format': 'mp4' 
         }
         # --- END FIX ---
@@ -1531,12 +1566,19 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
             ydl.download([url])
             
         downloaded_files = [
-            name for name in os.listdir(temp_dir)
+            os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
             if os.path.isfile(os.path.join(temp_dir, name))
+            and not name.endswith((".part", ".ytdl"))
         ]
         if not downloaded_files:
             raise RuntimeError("yt-dlp produced no output file; YouTube may require cookies or a supported account")
-        file_path = os.path.join(temp_dir, downloaded_files[0])
+        file_path = None
+        for candidate in downloaded_files:
+            if await has_audio_stream(candidate):
+                file_path = candidate
+                break
+        if not file_path:
+            raise RuntimeError("yt-dlp produced a video without an audio stream; ffmpeg may be missing")
         await feedback.edit_text("Uploading to Telegram...")
         with open(file_path, 'rb') as f:
             await context.bot.send_video(chat_id=update.effective_chat.id, video=f)
