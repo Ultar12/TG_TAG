@@ -36,42 +36,6 @@
       "description": "Numeric Telegram user ID for the bot administrator.",
       "required": true
     },
-    "AGENT_ROUTER_URL": {
-      "description": "Optional agent-router messages API URL used by /api/uai.",
-      "required": false
-    },
-    "ANTHROPIC_BASE_URL": {
-      "description": "Agent-router base URL alias used by /api/uai; /v1/messages is added automatically.",
-      "required": false
-    },
-    "AGENT_ROUTER_API_KEY": {
-      "description": "Optional agent-router API key used by /api/uai.",
-      "required": false
-    },
-    "ANTHROPIC_AUTH_TOKEN": {
-      "description": "Agent-router API key alias used by /api/uai.",
-      "required": false
-    },
-    "AGENT_ROUTER_MODEL": {
-      "description": "Optional agent-router model. Defaults to claude-opus-4-6; supported examples include claude-opus-4-7 and claude-opus-4-8.",
-      "required": false
-    },
-    "ANTHROPIC_MODEL": {
-      "description": "Agent-router model alias used by /api/uai.",
-      "required": false
-    },
-    "AGENT_ROUTER_MAX_TOKENS": {
-      "description": "Optional maximum response tokens for /api/uai. Defaults to 8192.",
-      "required": false
-    },
-    "AGENT_ROUTER_TIMEOUT_SECONDS": {
-      "description": "Optional agent-router request timeout. Defaults to 300 seconds.",
-      "required": false
-    },
-    "UAI_API_TOKEN": {
-      "description": "Optional shared token for protecting /api/uai. The plugin sends it as X-UAI-Token when configured.",
-      "required": false
-    },
     "OPENAI_API_KEY": {
       "description": "Optional OpenAI API key for image generation.",
       "required": false

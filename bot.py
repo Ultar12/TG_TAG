@@ -12,7 +12,6 @@ import requests
 import json
 from bs4 import BeautifulSoup
 import base64
-import pymupdf as fitz  # PyMuPDF
 import openai # For DALL-E image creation
 import pytesseract # For OCR
 from PIL import Image # For OCR
@@ -29,7 +28,7 @@ import datetime # For the recurring email job
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, AIORateLimiter, JobQueue
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 
 from sqlalchemy import create_engine, Column, String, text
@@ -37,7 +36,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.types import BigInteger
 import yt_dlp
-from media_api import run_combined_webhook, _uai_extract_reply, _uai_response_data
+from media_api import run_combined_webhook
 
 from prettytable import PrettyTable
 
@@ -57,15 +56,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ADMIN_ID = os.environ.get("ADMIN_ID")
-# AI and agent-router configuration
-AGENT_ROUTER_URL = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("AGENT_ROUTER_URL") or ""
-AGENT_ROUTER_API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("AGENT_ROUTER_API_KEY") or ""
-DEFAULT_AGENT_ROUTER_MODEL = "claude-opus-4-6"
-AGENT_ROUTER_MODEL = os.environ.get("ANTHROPIC_MODEL") or os.environ.get("AGENT_ROUTER_MODEL") or DEFAULT_AGENT_ROUTER_MODEL
-if AGENT_ROUTER_MODEL == "claude-opus-5":
-    AGENT_ROUTER_MODEL = DEFAULT_AGENT_ROUTER_MODEL
-AGENT_ROUTER_MAX_TOKENS = int(os.environ.get("AGENT_ROUTER_MAX_TOKENS", "8192"))
-AGENT_ROUTER_TIMEOUT_SECONDS = float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") # For DALL-E only
 # Email Keys
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
@@ -97,65 +87,6 @@ except (TypeError, ValueError):
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///tg_tag.db"
     logger.warning("DATABASE_URL is not set; using ephemeral SQLite database at tg_tag.db.")
-
-# --- API Configurations ---
-def _agent_router_endpoint() -> str:
-    base_url = AGENT_ROUTER_URL.strip().rstrip("/")
-    if not base_url:
-        return ""
-    if base_url.endswith("/v1/messages"):
-        return base_url
-    if base_url.endswith("/v1"):
-        return f"{base_url}/messages"
-    return f"{base_url}/v1/messages"
-
-
-def agent_router_available() -> bool:
-    return bool(_agent_router_endpoint() and AGENT_ROUTER_API_KEY.strip())
-
-
-def agent_router_request(messages: list[dict], max_tokens: int | None = None) -> str:
-    endpoint = _agent_router_endpoint()
-    if not endpoint or not AGENT_ROUTER_API_KEY.strip():
-        raise RuntimeError("AI agent service is not configured")
-    payload = {
-        "model": AGENT_ROUTER_MODEL,
-        "max_tokens": max_tokens or AGENT_ROUTER_MAX_TOKENS,
-        "messages": messages,
-    }
-    headers = {
-        "Authorization": f"Bearer {AGENT_ROUTER_API_KEY}",
-        "x-api-key": AGENT_ROUTER_API_KEY,
-        "anthropic-version": os.environ.get("ANTHROPIC_VERSION", "2023-06-01"),
-        "User-Agent": "claude-cli/2.1.158 (external, sdk-cli)",
-        "anthropic-beta": os.environ.get(
-            "AGENT_ROUTER_ANTHROPIC_BETA",
-            "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12",
-        ),
-        "anthropic-dangerous-direct-browser-access": "true",
-        "x-app": "cli",
-        "X-Stainless-Lang": "node",
-        "X-Stainless-Package-Version": "0.32.1",
-        "X-Stainless-OS": "MacOS",
-        "X-Stainless-Arch": "arm64",
-        "X-Stainless-Runtime": "Node.js",
-        "X-Stainless-Runtime-Version": "v18.19.0",
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(
-        endpoint,
-        json=payload,
-        headers=headers,
-        timeout=AGENT_ROUTER_TIMEOUT_SECONDS,
-    )
-    data = _uai_response_data(response)
-    if response.status_code < 200 or response.status_code >= 300:
-        raise RuntimeError("Agent router request failed")
-    text = _uai_extract_reply(data)
-    if text:
-        return text
-    raise RuntimeError("Agent router returned no text")
 
 try:
     if OPENAI_API_KEY:
@@ -257,10 +188,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def show_ai_tools_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
-        [KeyboardButton("Chat with AI"), KeyboardButton("Create Image")],
+        [KeyboardButton("Create Image")],
         [KeyboardButton("Read Text from Image"), KeyboardButton("Text to Speech")],
         [KeyboardButton("Animate Image"), KeyboardButton("Upscale Image")],
-        [KeyboardButton("Summarize Link"), KeyboardButton("Summarize File")],
         [KeyboardButton("Back to Main Menu")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -278,7 +208,7 @@ async def show_media_tools_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def show_utilities_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [KeyboardButton("Weather"), KeyboardButton("Crypto Prices")],
-        [KeyboardButton("Translate Text"), KeyboardButton("Tell a Joke")],
+        [KeyboardButton("Tell a Joke")],
         [KeyboardButton("Ask a Riddle"), KeyboardButton("Take Screenshot")],
     ]
     if update.effective_user.id == ADMIN_ID:
@@ -293,7 +223,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "**Bot Commands Guide:**\n\n"
         "You can use the menu buttons or the following commands:\n\n"
-        "**/agent <prompt>**: Ask the configured AI agent a question.\n"
         "**/create <prompt>**: Generate an image from text.\n"
         "**/novel <title>**: Search for a novel to download.\n"
         "**/movie <title>**: Get information about a movie.\n"
@@ -342,45 +271,6 @@ async def view_db_table(update: Update, context: ContextTypes.DEFAULT_TYPE, tabl
         await feedback.edit_text("An unexpected error occurred.")
     finally:
         session.close()
-
-async def start_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await save_user_to_db(update, context, event_type="Started AI Chat")
-    context.user_data['state'] = 'continuous_chat'
-    context.user_data['agent_history'] = []
-    chat_keyboard = [[KeyboardButton("End Chat")]]
-    reply_markup = ReplyKeyboardMarkup(chat_keyboard, resize_keyboard=True)
-    await update.message.reply_text("You are now in a continuous chat with the AI agent.\n\nSend your message, or press 'End Chat' to return to the main menu.", reply_markup=reply_markup)
-
-async def end_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.pop('state', None)
-    context.user_data.pop('agent_history', None)
-    await update.message.reply_text("Chat ended. Returning to the main menu.")
-    await start(update, context)
-
-async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt_text: str = None) -> None:
-    if not agent_router_available():
-        await update.message.reply_text("AI agent service is not configured.")
-        return
-    is_continuous_chat = context.user_data.get('state') == 'continuous_chat'
-    history = context.user_data.get('agent_history', []) if is_continuous_chat else []
-    if not prompt_text:
-        prompt_text = " ".join(context.args) if not is_continuous_chat else update.message.text
-    prompt_text = (prompt_text or "").strip()
-    if not prompt_text:
-        await update.message.reply_text("Please provide a prompt.")
-        return
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    try:
-        messages = history + [{"role": "user", "content": prompt_text}]
-        response_text = await asyncio.to_thread(agent_router_request, messages)
-        if is_continuous_chat:
-            context.user_data['agent_history'] = (
-                messages + [{"role": "assistant", "content": response_text}]
-            )[-10:]
-        await update.message.reply_text(response_text)
-    except Exception as e:
-        logger.error("Agent command error: %s", e)
-        await update.message.reply_text("Sorry, the AI agent could not answer right now.")
 
 async def gmail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
@@ -602,75 +492,6 @@ async def read_text_from_image_command(update: Update, context: ContextTypes.DEF
     except Exception as e:
         logger.error(f"OCR Error: {e}")
         await feedback.edit_text("Sorry, an error occurred while processing the image.")
-
-async def summarize_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    if not agent_router_available():
-        await update.message.reply_text("AI agent service is not configured.")
-        return
-    feedback = await update.message.reply_text("Analyzing link...")
-    try:
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        article_text = ' '.join(p.get_text() for p in soup.find_all('p'))
-        if len(article_text) < 100:
-            await feedback.edit_text("Couldn't extract enough text to summarize.")
-            return
-        await feedback.edit_text("Content extracted. Summarizing with the AI agent...")
-        prompt = f"Please provide a concise but comprehensive summary of the following article text:\n\n{article_text[:15000]}"
-        response_text = await asyncio.to_thread(
-            agent_router_request,
-            [{"role": "user", "content": prompt}],
-        )
-        await feedback.edit_text(response_text)
-    except Exception as e:
-        logger.error("Summarize URL error: %s", e)
-        await feedback.edit_text("Sorry, I couldn't read or summarize that URL.")
-
-async def summarize_file_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not agent_router_available():
-        await update.message.reply_text("AI agent service is not configured.")
-        return
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Please reply to an image or a PDF file with /summarize_file.")
-        return
-    replied_message = update.message.reply_to_message
-    feedback = await replied_message.reply_text("Processing file...")
-    try:
-        if replied_message.photo:
-            photo_file = await replied_message.photo[-1].get_file()
-            photo_bytes = bytes(await photo_file.download_as_bytearray())
-            image_content = [{
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": base64.b64encode(photo_bytes).decode("ascii"),
-                },
-            }, {"type": "text", "text": "Describe this image in detail."}]
-            response_text = await asyncio.to_thread(
-                agent_router_request,
-                [{"role": "user", "content": image_content}],
-            )
-        elif replied_message.document and replied_message.document.mime_type == 'application/pdf':
-            pdf_file = await replied_message.document.get_file()
-            pdf_bytes = await pdf_file.download_as_bytearray()
-            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-                extracted_text = "\n".join(page.get_text() for page in doc)
-            if not extracted_text.strip():
-                await feedback.edit_text("Could not extract any text from this PDF.")
-                return
-            prompt = f"Please provide a detailed summary of the following document:\n\n{extracted_text[:15000]}"
-            response_text = await asyncio.to_thread(
-                agent_router_request,
-                [{"role": "user", "content": prompt}],
-            )
-        else:
-            await feedback.edit_text("This command only works on an image or PDF file.")
-            return
-        await feedback.edit_text(f"**Summary:**\n\n{response_text}", parse_mode=ParseMode.MARKDOWN)
-    except Exception as e:
-        logger.error("File summarization error: %s", e)
-        await feedback.edit_text("Sorry, an error occurred while processing the file.")
 
 async def create_image_command(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str = None) -> None:
     if not openai_client:
@@ -2063,26 +1884,6 @@ async def get_weather(update: Update, context: ContextTypes.DEFAULT_TYPE, city: 
     except Exception:
         await update.message.reply_text("Sorry, couldn't fetch the weather.")
 
-async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_to_translate: str = None) -> None:
-    if not agent_router_available():
-        await update.message.reply_text("AI agent service is not configured.")
-        return
-    text = text_to_translate or " ".join(context.args)
-    if not text or " " not in text.strip():
-        await update.message.reply_text("Format: `<language> <text>`")
-        return
-    target_lang, text_to_trans = text.strip().split(None, 1)
-    prompt = f"Translate the following text to {target_lang}: {text_to_trans}"
-    try:
-        response_text = await asyncio.to_thread(
-            agent_router_request,
-            [{"role": "user", "content": prompt}],
-        )
-        await update.message.reply_text(response_text)
-    except Exception as e:
-        logger.error("Translation error: %s", e)
-        await update.message.reply_text("Sorry, the AI agent could not translate that text.")
-
 async def ping_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     webhook_url = context.job.data.get("webhook_url")
     if not webhook_url:
@@ -2422,9 +2223,6 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await save_user_to_db(update, context)
         return
     text = update.message.text
-    if state == 'continuous_chat':
-        await agent_command(update, context, prompt_text=text)
-        return
     popped_state = context.user_data.pop('state')
     if popped_state == 'awaiting_email_address':
         context.user_data['email_to'] = text
@@ -2469,14 +2267,11 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await feedback.edit_text("Failed to send email.")
     else:
         state_handlers = {
-            'awaiting_agent_prompt': lambda: agent_command(update, context, prompt_text=text),
             'awaiting_create_prompt': lambda: create_image_command(update, context, prompt=text),
             'awaiting_novel_title': lambda: search_for_novel(update.message, context, query=text),
             'awaiting_song_name': lambda: search_and_play_song(update, context, song_name=text),
             'awaiting_city': lambda: get_weather(update, context, city=text),
             'awaiting_crypto_symbols': lambda: get_crypto_prices(update, context, crypto_ids=text),
-            'awaiting_summary_url': lambda: summarize_url(update, context, url=text),
-            'awaiting_translation_text': lambda: translate_command(update, context, text_to_translate=text),
             
             # --- UPDATED: Clean router for media downloads (Pinterest support added) ---
             'awaiting_download_url': lambda: handle_media_download(update, context, url=text),
@@ -2504,9 +2299,9 @@ def main() -> None:
     
     cmd_handlers = [
         CommandHandler("start", start), CommandHandler("help", help_command),
-        CommandHandler("agent", agent_command), CommandHandler("create", create_image_command),
+CommandHandler("create", create_image_command),
         CommandHandler("upscale", upscale_image_command), CommandHandler("animate", animate_command),
-        CommandHandler("summarize_file", summarize_file_command), CommandHandler("readtext", read_text_from_image_command),
+CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("play", play_command), CommandHandler("mp4", convert_video_to_audio),
         CommandHandler("4k", four_k_upscale_command), # NEW 4K VIDEO COMMAND
         CommandHandler("novel", novel_command), CommandHandler("riddle", get_riddle), 
@@ -2519,15 +2314,12 @@ def main() -> None:
     menu_button_texts = {
         "AI Tools": show_ai_tools_menu, "Media Tools": show_media_tools_menu,
          "Help": help_command,
-        "Back to Main Menu": start, "End Chat": end_chat,
-        "Chat with AI": start_ai_chat, "Tell a Joke": get_joke, "Ask a Riddle": get_riddle,
+        "Back to Main Menu": start, "Tell a Joke": get_joke, "Ask a Riddle": get_riddle,
         "Create Image": lambda u,c: prompt_for_input(u,c,'awaiting_create_prompt', "Describe the image...", "Pressed 'Create Image'"),
         "Read Text from Image": lambda u,c: u.message.reply_text("Reply to an image with /readtext."),
         "Text to Speech": lambda u,c: prompt_for_input(u,c,'awaiting_tts_text', "What text to speak?", "Pressed 'TTS'"),
         "Upscale Image": lambda u,c: u.message.reply_text("Reply to an image with /upscale."),
         "Animate Image": lambda u,c: u.message.reply_text("Reply to an image with /animate."),
-        "Summarize File": lambda u,c: u.message.reply_text("Reply to an image or PDF with /summarize_file."),
-        "Summarize Link": lambda u,c: prompt_for_input(u,c,'awaiting_summary_url', "Send the article link.", "Pressed 'Summarize Link'"),
         "Play Music / Video": lambda u,c: prompt_for_input(u,c,'awaiting_song_name', "What song or video?", "Pressed 'Play'"),
         "Download PDF": lambda u,c: prompt_for_input(u,c,'awaiting_novel_title', "What PDF/novel to search for?", "Pressed 'Download PDF'"),
         "Search Movie": lambda u,c: prompt_for_input(u,c,'awaiting_movie_title', "What movie?", "Pressed 'Search Movie'"),
