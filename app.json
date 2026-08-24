@@ -1,7 +1,7 @@
 {
   "name": "TG_TAG Telegram Bot",
   "description": "A multi-purpose Telegram bot with AI, media, utility, and database features.",
-  "repository": "https://github.com/ultar1/TG_TAG",
+  "repository": "https://github.com/Ultar12/TG_TAG",
   "keywords": [
     "telegram",
     "telegram-bot",
@@ -65,6 +65,10 @@
     "GMAIL_APP_PASSWORD": {
       "description": "Optional Gmail app password.",
       "required": false
+    },
+    "WEBHOOK_URL": {
+      "description": "Public HTTPS base URL of the Heroku app, for example https://your-app.herokuapp.com.",
+      "required": true
     }
   },
   "formation": {

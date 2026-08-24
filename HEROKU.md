@@ -26,14 +26,14 @@ web: python bot.py
 worker: python bot.py
 ```
 
-Use the `worker` process for this Telegram bot because it runs Telegram polling on Heroku. The repository’s `Aptfile` installs the system packages required by the media features.
+Use the `web` process for this Telegram bot because it runs Telegram webhooks on Heroku. The repository’s `Aptfile` installs the system packages required by the media features.
 
 ## Environment variables
 
-Set `BOT_TOKEN` and `ADMIN_ID` in the Heroku Dashboard under **Settings → Config Vars**. `DATABASE_URL` is strongly recommended for persistent user data; if it is absent, the bot now starts with an ephemeral SQLite database and logs a warning. The other API variables are optional and enable their corresponding features.
+Set `BOT_TOKEN`, `ADMIN_ID`, and `WEBHOOK_URL` in the Heroku Dashboard under **Settings → Config Vars**. Set `WEBHOOK_URL` to the public HTTPS base URL of the app, for example `https://your-app.herokuapp.com`, without the bot-token path. `DATABASE_URL` is strongly recommended for persistent user data; if it is absent, the bot now starts with an ephemeral SQLite database and logs a warning. The other API variables are optional and enable their corresponding features.
 
 Do not commit new secret values to `.env` or this guide.
 
 ## Troubleshooting
 
-If the logs show `Critical environment variables are missing`, check the required Config Vars first. If the logs show that an APT binary such as `ffmpeg` is missing, check **Settings → Buildpacks** and confirm that the APT buildpack is listed before `heroku/python`, then trigger a fresh deploy.
+If the logs show `Missing required environment variables`, check `BOT_TOKEN` and `ADMIN_ID` first. If the logs show `WEBHOOK_URL is required for Heroku webhook mode`, add the app’s public HTTPS URL as the `WEBHOOK_URL` Config Var. If an APT binary such as `ffmpeg` is missing, check **Settings → Buildpacks** and confirm that the APT buildpack is listed before `heroku/python`, then trigger a fresh deploy. Keep `web.1` enabled and do not use the worker process for the webhook deployment.

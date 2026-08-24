@@ -2316,10 +2316,22 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
     
     port = int(os.environ.get("PORT", "10000"))
-    webhook_base_url = os.environ.get("WEBHOOK_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+    webhook_base_url = (
+        os.environ.get("WEBHOOK_URL")
+        or os.environ.get("RENDER_EXTERNAL_URL")
+    )
     legacy_render_name = os.environ.get("RENDER_APP_NAME")
     if not webhook_base_url and legacy_render_name:
         webhook_base_url = f"https://{legacy_render_name}.onrender.com"
+
+    # Heroku dynos must use an explicit public HTTPS URL for Telegram webhooks.
+    # Do not silently switch a Heroku deployment back to polling mode.
+    if os.environ.get("DYNO") and not webhook_base_url:
+        logger.critical(
+            "WEBHOOK_URL is required for Heroku webhook mode. "
+            "Set it to the app's public HTTPS URL and redeploy."
+        )
+        sys.exit(1)
 
     if webhook_base_url:
         webhook_url = webhook_base_url.rstrip("/") + f"/{BOT_TOKEN}"
