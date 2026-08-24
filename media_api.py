@@ -49,6 +49,154 @@ def _safe_query(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:300]
 
 
+PINTEREST_HOSTS = {"pinterest.com", "pin.it"}
+PINTEREST_PINIMG_RE = re.compile(
+    r"https?://(?:i|v1)\.pinimg\.com/[^\s\"'<>),;}\]]+",
+    re.IGNORECASE,
+)
+PINTEREST_META_RE = re.compile(
+    r"<meta[^>]+(?:property|name)=[\"'](?:og:video|og:video:url|twitter:player:stream)[\"'][^>]+content=[\"']([^\"']+)",
+    re.IGNORECASE,
+)
+PINTEREST_IMAGE_META_RE = re.compile(
+    r"<meta[^>]+(?:property|name)=[\"'](?:og:image|twitter:image)[\"'][^>]+content=[\"']([^\"']+)",
+    re.IGNORECASE,
+)
+
+
+def _is_pinterest_url(value: str) -> bool:
+    try:
+        host = urlparse(value).netloc.lower().split(":", 1)[0]
+        return host in PINTEREST_HOSTS or host.endswith(".pinterest.com")
+    except Exception:
+        return False
+
+
+def _clean_pinterest_url(value: str, base_url: str) -> str:
+    cleaned = (
+        str(value or "")
+        .replace("\\u002F", "/")
+        .replace("\\/", "/")
+        .replace("&amp;", "&")
+        .strip()
+        .rstrip("),.;}]")
+    )
+    if not cleaned:
+        return ""
+    try:
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        return cleaned
+    except Exception:
+        return ""
+
+
+def _normalize_pinterest_image_url(value: str) -> str:
+    normalized = _clean_pinterest_url(value, "https://www.pinterest.com/")
+    if not normalized or "pinimg.com" not in normalized:
+        return normalized
+    return re.sub(r"/(?:\d+x\d*|originals)/", "/originals/", normalized, flags=re.IGNORECASE)
+
+
+def _pinterest_media_candidates(html: str, page_url: str) -> tuple[list[str], list[str]]:
+    video_urls = []
+    image_urls = []
+
+    for value in PINTEREST_META_RE.findall(html):
+        cleaned = _clean_pinterest_url(value, page_url)
+        if cleaned:
+            video_urls.append(cleaned)
+
+    for value in PINTEREST_IMAGE_META_RE.findall(html):
+        cleaned = _normalize_pinterest_image_url(value)
+        if cleaned:
+            image_urls.append(cleaned)
+
+    for match in PINTEREST_PINIMG_RE.findall(html):
+        cleaned = _clean_pinterest_url(match, page_url)
+        if not cleaned:
+            continue
+        if re.search(r"(?:\.mp4|\.m3u8)(?:[?#]|$)|/videos/", cleaned, re.IGNORECASE):
+            video_urls.append(cleaned)
+        else:
+            image_urls.append(_normalize_pinterest_image_url(cleaned))
+
+    def unique(values: list[str]) -> list[str]:
+        return list(dict.fromkeys(values))
+
+    return unique(video_urls), unique(image_urls)
+
+
+def _download_pinterest_sync(source_url: str) -> tuple[str, Any]:
+    headers = {
+        "User-Agent": MEDIA_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.pinterest.com/",
+    }
+    response = requests.get(
+        source_url,
+        headers=headers,
+        timeout=45,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    page_url = response.url or source_url
+    video_urls, image_urls = _pinterest_media_candidates(response.text, page_url)
+
+    preferred_video = next(
+        (
+            value for value in video_urls
+            if re.search(r"(?:\.mp4|\.m3u8)(?:[?#]|$)|/videos/", value, re.IGNORECASE)
+        ),
+        None,
+    )
+    if preferred_video:
+        if re.search(r"\.m3u8(?:[?#]|$)", preferred_video, re.IGNORECASE):
+            directory = tempfile.mkdtemp(prefix="tg_tag_pinterest_video_")
+            try:
+                options = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "noplaylist": True,
+                    "outtmpl": os.path.join(directory, "%(title).120B.%(ext)s"),
+                    "format": "best",
+                    "merge_output_format": "mp4",
+                }
+                with yt_dlp.YoutubeDL(options) as downloader:
+                    downloader.download([preferred_video])
+                output_path = os.path.join(directory, "pinterest-video.mp4")
+                _copy_valid_download(directory, output_path, require_audio=False)
+                return "video", Path(output_path).read_bytes()
+            finally:
+                shutil.rmtree(directory, ignore_errors=True)
+
+        media_response = requests.get(
+            preferred_video,
+            headers=headers,
+            timeout=120,
+            stream=True,
+        )
+        media_response.raise_for_status()
+        content = media_response.content
+        if not content or len(content) < 1024:
+            raise MediaAPIError("Pinterest returned an empty video file.")
+        if len(content) > MAX_API_FILE_BYTES:
+            raise MediaAPIError("The Pinterest video is larger than the supported 2 GB limit.")
+        return "video", content
+
+    usable_images = [
+        value for value in image_urls
+        if not re.search(r"/(?:75x75|236x|474x|564x|60x60)/", value, re.IGNORECASE)
+    ]
+    if usable_images:
+        return "images", usable_images[:20]
+
+    raise MediaAPIError(
+        "Pinterest returned no public image or video URL. The pin may be private, deleted, or login-gated."
+    )
+
+
 def _file_has_audio(path: str) -> bool:
     try:
         probe = subprocess.run(
@@ -378,6 +526,25 @@ class DownloadHandler(_BaseHandler):
         url = _safe_url(raw_url)
         host = urlparse(url).netloc.lower()
         try:
+            if _is_pinterest_url(url):
+                pinterest_type, pinterest_payload = await asyncio.to_thread(
+                    _download_pinterest_sync,
+                    url,
+                )
+                if pinterest_type == "images":
+                    self.set_header("Content-Type", "application/json")
+                    self.write(json.dumps({
+                        "type": "images",
+                        "urls": pinterest_payload,
+                    }))
+                    return
+                self._write_media(
+                    pinterest_payload,
+                    "pinterest-video.mp4",
+                    "video/mp4",
+                )
+                return
+
             if "tiktok.com" in host:
                 tikwm_result = await asyncio.to_thread(_download_tikwm_sync, url)
                 if tikwm_result:
