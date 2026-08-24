@@ -103,6 +103,101 @@ def _base_ytdl_options(common_options: Mapping[str, Any]) -> dict[str, Any]:
     return options
 
 
+def _run_ffmpeg(args: list[str], timeout: int = 900) -> None:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostdin", "-y", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise MediaAPIError("ffmpeg is not installed on the TG_TAG server.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MediaAPIError("Video conversion timed out on the TG_TAG server.") from exc
+    except OSError as exc:
+        raise MediaAPIError(f"ffmpeg could not start: {exc}") from exc
+
+    if result.returncode == 0:
+        return
+
+    diagnostics = " ".join(
+        line.strip()
+        for line in result.stderr.splitlines()
+        if line.strip()
+    )[-1200:]
+    raise MediaAPIError(
+        f"ffmpeg conversion failed with code {result.returncode}: "
+        f"{diagnostics or 'no diagnostic output'}"
+    )
+
+
+def _normalize_video_for_whatsapp(input_path: str, output_path: str) -> str:
+    _run_ffmpeg(
+        [
+            "-fflags", "+genpts",
+            "-err_detect", "ignore_err",
+            "-i", input_path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-map_metadata", "-1",
+            "-sn",
+            "-vf", "scale=1280:1280:force_original_aspect_ratio=decrease,format=yuv420p",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-profile:v", "main",
+            "-level", "4.0",
+            "-r", "30",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-shortest",
+            "-movflags", "+faststart",
+            output_path,
+        ],
+    )
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) < 5000:
+        raise MediaAPIError("ffmpeg produced an empty MP4 file.")
+    if not _is_valid_mp4(output_path):
+        raise MediaAPIError("ffmpeg produced an invalid MP4 file.")
+    return output_path
+
+
+def _is_valid_mp4(path: str) -> bool:
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=format_name",
+                "-of", "default=nw=1:nk=1",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return False
+    format_names = {item.strip() for item in probe.stdout.split(",") if item.strip()}
+    return probe.returncode == 0 and "mp4" in format_names
+
+
+def _normalize_video_bytes_sync(content: bytes) -> bytes:
+    if len(content) > MAX_API_FILE_BYTES:
+        raise MediaAPIError("The video is larger than the supported 2 GB limit.")
+    with tempfile.TemporaryDirectory(prefix="tg_tag_api_tiktok_video_") as directory:
+        input_path = os.path.join(directory, "input.media")
+        output_path = os.path.join(directory, "output.mp4")
+        Path(input_path).write_bytes(content)
+        _normalize_video_for_whatsapp(input_path, output_path)
+        return Path(output_path).read_bytes()
+
+
 def _normalize_quality_height(value: Any, default: int = 2160) -> int:
     value_text = str(value or "").strip().lower()
     aliases = {
@@ -132,6 +227,7 @@ def _download_video_file_sync(
 ) -> tuple[str, str]:
     directory = tempfile.mkdtemp(prefix="tg_tag_api_video_")
     try:
+        raw_path = os.path.join(directory, "raw.media")
         output_path = os.path.join(directory, "video.mp4")
         options = _base_ytdl_options(common_options)
         options.update(
@@ -144,7 +240,10 @@ def _download_video_file_sync(
         )
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.download([source_url])
-        _copy_valid_download(directory, output_path, require_audio=require_audio)
+        _copy_valid_download(directory, raw_path, require_audio=require_audio)
+        _normalize_video_for_whatsapp(raw_path, output_path)
+        if os.path.getsize(output_path) > MAX_API_FILE_BYTES:
+            raise MediaAPIError("The normalized video is larger than the supported 2 GB limit.")
         return output_path, directory
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
@@ -286,9 +385,13 @@ class DownloadHandler(_BaseHandler):
                         self.write(payload)
                         return
                     content, caption = payload
+                    normalized = await asyncio.to_thread(
+                        _normalize_video_bytes_sync,
+                        content,
+                    )
                     if caption:
                         self.set_header("X-Media-Caption", quote(caption, safe=""))
-                    self._write_media(content, "tiktok-video.mp4", "video/mp4")
+                    self._write_media(normalized, "tiktok-video.mp4", "video/mp4")
                     return
 
             if not requested_quality:
