@@ -9,6 +9,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, urlparse
@@ -22,6 +24,9 @@ from telegram.ext import Application
 
 logger = logging.getLogger(__name__)
 MAX_API_FILE_BYTES = 2 * 1024 * 1024 * 1024
+PLAY_JOB_TTL_SECONDS = 1800
+PLAY_JOB_MAX_ACTIVE = 2
+PLAY_JOBS: dict[str, dict[str, Any]] = {}
 MEDIA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -143,10 +148,13 @@ def _normalize_video_for_whatsapp(input_path: str, output_path: str) -> str:
             "-map", "0:a:0?",
             "-map_metadata", "-1",
             "-sn",
-            "-vf", "scale=1280:1280:force_original_aspect_ratio=decrease,format=yuv420p",
+            "-vf", "scale=854:854:force_original_aspect_ratio=decrease,format=yuv420p",
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "28",
+            "-crf", "30",
+            "-maxrate", "1500k",
+            "-bufsize", "3000k",
+            "-threads", "2",
             "-pix_fmt", "yuv420p",
             "-profile:v", "main",
             "-level", "4.0",
@@ -273,6 +281,76 @@ def _download_audio_sync(source_url: str, common_options: Mapping[str, Any]) -> 
         if os.path.getsize(selected[0]) > MAX_API_FILE_BYTES:
             raise MediaAPIError("The downloaded audio is larger than the supported 2 GB limit.")
         return Path(selected[0]).read_bytes()
+
+
+def _cleanup_play_jobs() -> None:
+    now = time.time()
+    expired = []
+    for job_id, job in PLAY_JOBS.items():
+        if now - float(job.get("updated_at", now)) <= PLAY_JOB_TTL_SECONDS:
+            continue
+        temp_dir = job.get("temp_dir")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        expired.append(job_id)
+    for job_id in expired:
+        PLAY_JOBS.pop(job_id, None)
+
+
+async def _run_play_job(
+    job_id: str,
+    query: str,
+    mode: str,
+    common_options: Mapping[str, Any],
+) -> None:
+    job = PLAY_JOBS.get(job_id)
+    if not job:
+        return
+    try:
+        track = await asyncio.to_thread(_search_youtube_sync, query, common_options)
+        job.update({
+            "state": "processing",
+            "title": track["title"],
+            "artist": track["artist"],
+            "updated_at": time.time(),
+        })
+        if mode == "video":
+            media_path, temp_dir = await asyncio.to_thread(
+                _download_video_file_sync,
+                track["url"],
+                common_options,
+                True,
+                1080,
+            )
+            filename = "video.mp4"
+            content_type = "video/mp4"
+        else:
+            media = await asyncio.to_thread(
+                _download_audio_sync,
+                track["url"],
+                common_options,
+            )
+            temp_dir = tempfile.mkdtemp(prefix="tg_tag_api_play_job_")
+            media_path = os.path.join(temp_dir, "audio.mp3")
+            Path(media_path).write_bytes(media)
+            filename = "audio.mp3"
+            content_type = "audio/mpeg"
+        job.update({
+            "state": "ready",
+            "path": media_path,
+            "temp_dir": temp_dir,
+            "filename": filename,
+            "content_type": content_type,
+            "size": os.path.getsize(media_path),
+            "updated_at": time.time(),
+        })
+    except Exception as exc:
+        logger.exception("Play job %s failed", job_id)
+        job.update({
+            "state": "failed",
+            "error": str(exc),
+            "updated_at": time.time(),
+        })
 
 
 def _search_youtube_sync(query: str, common_options: Mapping[str, Any]) -> dict[str, str]:
@@ -415,52 +493,96 @@ class DownloadHandler(_BaseHandler):
             self.write({"error": str(exc)})
 
 
-class PlayHandler(_BaseHandler):
+class PlayJobCreateHandler(_BaseHandler):
     async def post(self) -> None:
-        await self._handle(self._json_body())
-
-    async def get(self) -> None:
-        await self._handle({"query": self.get_query_argument("query", default="")})
-
-    async def _handle(self, body: Mapping[str, Any]) -> None:
+        body = self._json_body()
         query = _safe_query(body.get("query"))
         if not query:
             raise tornado.web.HTTPError(400, reason="Missing query.")
-        try:
-            track = await asyncio.to_thread(_search_youtube_sync, query, self.common_options)
-            mode = str(body.get("mode") or "audio").strip().lower()
-            if mode in {"video", "vla", "mp4"}:
-                video_path, temp_dir = await asyncio.to_thread(
-                    _download_video_file_sync,
-                    track["url"],
-                    self.common_options,
-                    True,
-                    _normalize_quality_height(body.get("quality"), default=2160),
-                )
-                try:
-                    self.set_header("X-Track-Title", track["title"])
-                    self.set_header("X-Track-Artist", track["artist"])
-                    self.set_header("X-Track-Source", "youtube")
-                    await self._stream_file(video_path, "video.mp4", "video/mp4")
-                finally:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                return
-            else:
-                media = await asyncio.to_thread(
-                    _download_audio_sync, track["url"], self.common_options
-                )
-                filename = "audio.mp3"
-                content_type = "audio/mpeg"
-            self.set_header("X-Track-Title", track["title"])
-            self.set_header("X-Track-Artist", track["artist"])
-            self.set_header("X-Track-Source", "youtube")
-            self._write_media(media, filename, content_type)
-        except tornado.web.HTTPError:
-            raise
-        except Exception as exc:
-            logger.exception("/api/play failed for %s", query)
+
+        mode_value = str(body.get("mode") or "audio").strip().lower()
+        mode = "video" if mode_value in {"video", "vla", "mp4"} else "audio"
+        _cleanup_play_jobs()
+        active_jobs = sum(
+            1 for item in PLAY_JOBS.values()
+            if item.get("state") in {"queued", "processing"}
+        )
+        if active_jobs >= PLAY_JOB_MAX_ACTIVE:
+            self.set_status(429)
+            self.write({"error": "The media server is busy. Try again shortly."})
+            return
+
+        job_id = uuid.uuid4().hex
+        PLAY_JOBS[job_id] = {
+            "state": "queued",
+            "query": query,
+            "mode": mode,
+            "updated_at": time.time(),
+        }
+        asyncio.create_task(
+            _run_play_job(job_id, query, mode, self.common_options)
+        )
+        self.set_status(202)
+        self.set_header("Content-Type", "application/json")
+        self.write({
+            "job_id": job_id,
+            "status_url": f"/api/play/{job_id}",
+            "result_url": f"/api/play/{job_id}/result",
+        })
+
+    async def get(self) -> None:
+        await self.post()
+
+
+class PlayJobStatusHandler(_BaseHandler):
+    async def get(self, job_id: str) -> None:
+        _cleanup_play_jobs()
+        job = PLAY_JOBS.get(job_id)
+        if not job:
+            raise tornado.web.HTTPError(404, reason="Play job was not found or expired.")
+        self.set_header("Content-Type", "application/json")
+        self.set_status(200 if job.get("state") in {"ready", "failed"} else 202)
+        self.write({
+            "job_id": job_id,
+            "state": job.get("state"),
+            "title": job.get("title", ""),
+            "artist": job.get("artist", ""),
+            "error": job.get("error", ""),
+            "result_url": f"/api/play/{job_id}/result",
+        })
+
+
+class PlayJobResultHandler(_BaseHandler):
+    async def get(self, job_id: str) -> None:
+        _cleanup_play_jobs()
+        job = PLAY_JOBS.get(job_id)
+        if not job:
+            raise tornado.web.HTTPError(404, reason="Play job was not found or expired.")
+        state = job.get("state")
+        if state in {"queued", "processing"}:
+            self.set_status(202)
+            self.set_header("Content-Type", "application/json")
+            self.write({"job_id": job_id, "state": state})
+            return
+        if state == "failed":
             self.set_status(502)
-            self.write({"error": str(exc)})
+            self.write({"error": job.get("error", "Media job failed.")})
+            return
+        path = str(job.get("path") or "")
+        if not path or not os.path.isfile(path):
+            raise tornado.web.HTTPError(410, reason="Play result is no longer available.")
+        self.set_header("X-Track-Title", str(job.get("title", "")))
+        self.set_header("X-Track-Artist", str(job.get("artist", "")))
+        self.set_header("X-Track-Source", "youtube")
+        await self._stream_file(
+            path,
+            str(job.get("filename", "media.bin")),
+            str(job.get("content_type", "application/octet-stream")),
+        )
+        temp_dir = job.get("temp_dir")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        PLAY_JOBS.pop(job_id, None)
 
 
 class TelegramWebhookHandler(tornado.web.RequestHandler):
@@ -505,8 +627,10 @@ async def _run_combined_webhook(
         [
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
-            (r"/api/play-hook/?", PlayHandler, {"common_options": common_options}),
-            (r"/api/play/?", PlayHandler, {"common_options": common_options}),
+            (r"/api/play/([a-f0-9]{32})/result/?", PlayJobResultHandler, {"common_options": common_options}),
+            (r"/api/play/([a-f0-9]{32})/?", PlayJobStatusHandler, {"common_options": common_options}),
+            (r"/api/play-hook/?", PlayJobCreateHandler, {"common_options": common_options}),
+            (r"/api/play/?", PlayJobCreateHandler, {"common_options": common_options}),
             (r"/", HealthHandler),
             (r"/health/?", HealthHandler),
         ]
