@@ -21,7 +21,7 @@ from telegram import Update
 from telegram.ext import Application
 
 logger = logging.getLogger(__name__)
-MAX_API_FILE_BYTES = 49 * 1024 * 1024
+MAX_API_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MEDIA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -90,7 +90,7 @@ def _copy_valid_download(directory: str, output_path: str, require_audio: bool) 
         )
 
     if os.path.getsize(selected) > MAX_API_FILE_BYTES:
-        raise MediaAPIError("The downloaded file is larger than Telegram's 49 MB API limit.")
+        raise MediaAPIError("The downloaded file is larger than the supported 2 GB limit.")
     shutil.copyfile(selected, output_path)
     return output_path
 
@@ -103,12 +103,13 @@ def _base_ytdl_options(common_options: Mapping[str, Any]) -> dict[str, Any]:
     return options
 
 
-def _download_video_sync(
+def _download_video_file_sync(
     source_url: str,
     common_options: Mapping[str, Any],
     require_audio: bool = True,
-) -> str:
-    with tempfile.TemporaryDirectory(prefix="tg_tag_api_video_") as directory:
+) -> tuple[str, str]:
+    directory = tempfile.mkdtemp(prefix="tg_tag_api_video_")
+    try:
         output_path = os.path.join(directory, "video.mp4")
         options = _base_ytdl_options(common_options)
         options.update(
@@ -122,7 +123,10 @@ def _download_video_sync(
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.download([source_url])
         _copy_valid_download(directory, output_path, require_audio=require_audio)
-        return Path(output_path).read_bytes()
+        return output_path, directory
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
 
 
 def _download_audio_sync(source_url: str, common_options: Mapping[str, Any]) -> bytes:
@@ -146,7 +150,7 @@ def _download_audio_sync(source_url: str, common_options: Mapping[str, Any]) -> 
         if not selected:
             raise MediaAPIError("YouTube returned no usable audio file.")
         if os.path.getsize(selected[0]) > MAX_API_FILE_BYTES:
-            raise MediaAPIError("The downloaded audio is larger than Telegram's 49 MB API limit.")
+            raise MediaAPIError("The downloaded audio is larger than the supported 2 GB limit.")
         return Path(selected[0]).read_bytes()
 
 
@@ -192,7 +196,7 @@ def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
     )
     media_response.raise_for_status()
     if len(media_response.content) > MAX_API_FILE_BYTES:
-        raise MediaAPIError("The TikTok video is larger than Telegram's 49 MB API limit.")
+        raise MediaAPIError("The TikTok video is larger than the supported 2 GB limit.")
     return "video", (media_response.content, caption)
 
 
@@ -211,11 +215,23 @@ class _BaseHandler(tornado.web.RequestHandler):
 
     def _write_media(self, content: bytes, filename: str, content_type: str) -> None:
         if len(content) > MAX_API_FILE_BYTES:
-            raise tornado.web.HTTPError(413, reason="Media exceeds the 49 MB API limit.")
+            raise tornado.web.HTTPError(413, reason="Media exceeds the supported 2 GB limit.")
         self.set_header("Content-Type", content_type)
         self.set_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.set_header("Content-Length", str(len(content)))
         self.write(content)
+
+    async def _stream_file(self, path: str, filename: str, content_type: str) -> None:
+        size = os.path.getsize(path)
+        if size > MAX_API_FILE_BYTES:
+            raise tornado.web.HTTPError(413, reason="Media exceeds the supported 2 GB limit.")
+        self.set_header("Content-Type", content_type)
+        self.set_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.set_header("Content-Length", str(size))
+        with open(path, "rb") as source:
+            while chunk := source.read(1024 * 1024):
+                self.write(chunk)
+                await self.flush()
 
 
 class HealthHandler(tornado.web.RequestHandler):
@@ -250,10 +266,16 @@ class DownloadHandler(_BaseHandler):
                     self._write_media(content, "tiktok-video.mp4", "video/mp4")
                     return
 
-            content = await asyncio.to_thread(
-                _download_video_sync, url, self.common_options, "youtube.com" in host or "youtu.be" in host
+            video_path, temp_dir = await asyncio.to_thread(
+                _download_video_file_sync,
+                url,
+                self.common_options,
+                "youtube.com" in host or "youtu.be" in host,
             )
-            self._write_media(content, "downloaded-video.mp4", "video/mp4")
+            try:
+                await self._stream_file(video_path, "downloaded-video.mp4", "video/mp4")
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
         except tornado.web.HTTPError:
             raise
         except Exception as exc:
@@ -277,11 +299,17 @@ class PlayHandler(_BaseHandler):
             track = await asyncio.to_thread(_search_youtube_sync, query, self.common_options)
             mode = str(body.get("mode") or "audio").strip().lower()
             if mode in {"video", "vla", "mp4"}:
-                media = await asyncio.to_thread(
-                    _download_video_sync, track["url"], self.common_options, True
+                video_path, temp_dir = await asyncio.to_thread(
+                    _download_video_file_sync, track["url"], self.common_options, True
                 )
-                filename = "video.mp4"
-                content_type = "video/mp4"
+                try:
+                    self.set_header("X-Track-Title", track["title"])
+                    self.set_header("X-Track-Artist", track["artist"])
+                    self.set_header("X-Track-Source", "youtube")
+                    await self._stream_file(video_path, "video.mp4", "video/mp4")
+                finally:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                return
             else:
                 media = await asyncio.to_thread(
                     _download_audio_sync, track["url"], self.common_options
