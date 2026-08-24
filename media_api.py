@@ -797,6 +797,17 @@ def _uai_agent_endpoint() -> str:
     return f"{base_url}/v1/messages"
 
 
+def _uai_agent_endpoints() -> list[str]:
+    primary = _uai_agent_endpoint()
+    candidates = [primary] if primary else []
+    fallback_base = os.environ.get("AGENT_ROUTER_FALLBACK_URL", "https://co.agentrouter.org")
+    fallback_base = fallback_base.strip().rstrip("/")
+    fallback = f"{fallback_base}/v1/messages" if fallback_base else ""
+    if fallback and fallback not in candidates:
+        candidates.append(fallback)
+    return candidates
+
+
 class UAIHandler(tornado.web.RequestHandler):
     """Direct Scraper-compatible AI endpoint using an agent-router messages API."""
 
@@ -890,22 +901,41 @@ class UAIHandler(tornado.web.RequestHandler):
                     "Accept": "application/json, text/plain, */*",
                     "Content-Type": "application/json",
                 }
-                response = await asyncio.to_thread(
-                    requests.post,
-                    agent_url,
-                    json=payload,
-                    headers=headers,
-                    timeout=float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300")),
-                )
-                response_data = _uai_response_data(response)
-                if response.status_code < 200 or response.status_code >= 300:
-                    logger.warning("Agent router returned HTTP %s: %s", response.status_code, _uai_error_text(response_data)[:500])
+                response = None
+                response_data = {}
+                reply = ""
+                for endpoint in _uai_agent_endpoints():
+                    candidate_response = await asyncio.to_thread(
+                        requests.post,
+                        endpoint,
+                        json=payload,
+                        headers=headers,
+                        timeout=float(os.environ.get("AGENT_ROUTER_TIMEOUT_SECONDS", "300")),
+                    )
+                    candidate_data = _uai_response_data(candidate_response)
+                    candidate_reply = _uai_clean_text(
+                        _uai_extract_reply(candidate_data), UAI_MAX_TEXT_CHARS
+                    )
+                    response = candidate_response
+                    response_data = candidate_data
+                    reply = candidate_reply
+                    if 200 <= candidate_response.status_code < 300 and candidate_reply:
+                        break
+                    logger.warning(
+                        "Agent router endpoint %s returned HTTP %s; content-type=%s content-length=%s body-bytes=%s response shape=%s",
+                        urlparse(endpoint).netloc,
+                        candidate_response.status_code,
+                        candidate_response.headers.get("Content-Type", ""),
+                        candidate_response.headers.get("Content-Length", ""),
+                        len(candidate_response.content or b""),
+                        _uai_shape(candidate_data),
+                    )
+
+                if response is None or response.status_code < 200 or response.status_code >= 300:
                     raise RuntimeError("Agent router request failed")
-                reply = _uai_clean_text(_uai_extract_reply(response_data), UAI_MAX_TEXT_CHARS)
                 if not reply:
                     logger.warning(
-                        "Agent router returned HTTP %s without text; content-type=%s content-length=%s body-bytes=%s response shape: %s",
-                        response.status_code,
+                        "Agent router returned no usable text; content-type=%s content-length=%s body-bytes=%s response shape: %s",
                         response.headers.get("Content-Type", ""),
                         response.headers.get("Content-Length", ""),
                         len(response.content or b""),
