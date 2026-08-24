@@ -389,6 +389,11 @@ def _normalize_quality_height(value: Any, default: int = 1080) -> int:
     return max(144, min(height, 1080))
 
 
+def _is_facebook_url(source_url: str) -> bool:
+    host = urlparse(source_url).netloc.lower().split(':', 1)[0]
+    return host in {'facebook.com', 'fb.watch'} or host.endswith('.facebook.com')
+
+
 def _download_video_file_sync(
     source_url: str,
     common_options: Mapping[str, Any],
@@ -399,10 +404,19 @@ def _download_video_file_sync(
     try:
         raw_path = os.path.join(directory, "raw.media")
         options = _base_ytdl_options(common_options)
+        if _is_facebook_url(source_url):
+            format_selector = f"best[height<={max_height}]/best"
+        else:
+            format_selector = (
+                f"best[ext=mp4][height<={max_height}]/"
+                f"bestvideo[ext=mp4][height<={max_height}]+"
+                f"bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]"
+            )
+
         options.update(
             {
                 "outtmpl": os.path.join(directory, "%(title).120B.%(ext)s"),
-                "format": f"best[ext=mp4][height<={max_height}]/bestvideo[ext=mp4][height<={max_height}]+bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]",
+                "format": format_selector,
                 "merge_output_format": "mp4",
             }
         )
