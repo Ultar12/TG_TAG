@@ -1,34 +1,32 @@
-# requirements.txt
+# Core bot library with rate limiting, scheduled jobs, and webhook support
+python-telegram-bot[rate-limiter,job-queue,webhooks]==22.8
 
-# Core bot library with extras for rate limiting and webhooks
-python-telegram-bot[rate-limiter,job-queue,webhooks]>=20.8
-
-# Web Server
-Flask>=3.0.0
-gunicorn>=21.2.0
-uvicorn>=0.25.0
+# Web/runtime support
+Flask==3.1.3
+gunicorn==26.1.0
+uvicorn==0.52.1
 
 # Database
-SQLAlchemy>=2.0.23
-psycopg2-binary>=2.9.9
+SQLAlchemy==2.0.52
+psycopg2-binary==2.9.12
 
-# Media Downloads & Processing
-yt-dlp>=2024.1.1
-pydub>=0.25.1
-PrettyTable>=3.10.0
+# Media downloads and processing
+yt-dlp==2026.8.19
+pydub==0.25.1
+PrettyTable==3.18.0
 
-# AI & API Services
-google-generativeai>=0.3.0
-openai>=1.10.0
-gTTS>=2.4.0
-requests>=2.31.0
-beautifulsoup4>=4.12.2
-google-cloud-texttospeech>=2.14.1
+# AI and API services
+google-generativeai==0.8.6
+openai==2.52.0
+gTTS==2.5.4
+requests==2.34.2
+beautifulsoup4==4.15.0
+google-cloud-texttospeech==2.37.0
 
-# File and Image Handling
-PyMuPDF>=1.23.8
-Pillow>=10.1.0
-pytesseract>=0.3.10
+# File and image handling
+PyMuPDF==1.28.2
+Pillow==12.3.0
+pytesseract==0.3.13
 
 # Utilities
-python-dotenv>=1.0.0
+python-dotenv==1.2.3
