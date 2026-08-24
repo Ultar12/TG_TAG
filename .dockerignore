@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+cookies.txt
+cookies_youtube.txt
+downloads/
+__pycache__/
+*.py[cod]
+*.log
+static_audit.py
+Test
+FIXES_APPLIED.md
+RECENT_FIXES.md
+package.json
+.buildpacks
+Aptfile

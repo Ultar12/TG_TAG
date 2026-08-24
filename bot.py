@@ -32,7 +32,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from telegram.constants import ParseMode, ChatAction
 from telegram.helpers import escape_markdown
 
-from sqlalchemy import create_engine, Column, String
+from sqlalchemy import create_engine, Column, String, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.types import BigInteger
@@ -92,7 +92,12 @@ except Exception as e: openai_client = None; logger.error(f"Failed to configure 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # NEW: Define YouTube cookies file
-YTDL_COOKIES_FILE = "cookies_youtube.txt" 
+YTDL_COOKIES_FILE = os.environ.get("YTDL_COOKIES_FILE", "cookies_youtube.txt")
+YTDL_COOKIE_OPTIONS = {}
+if os.path.isfile(YTDL_COOKIES_FILE) and os.path.getsize(YTDL_COOKIES_FILE) > 0:
+    YTDL_COOKIE_OPTIONS["cookiefile"] = YTDL_COOKIES_FILE
+else:
+    logger.info("No YouTube cookies file configured; yt-dlp will run without cookies.")
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -105,7 +110,12 @@ class User(Base):
     username = Column(String, nullable=True)
     chat_id = Column(BigInteger, primary_key=True, nullable=False)
 
-engine = create_engine(DATABASE_URL, pool_size=5, max_overflow=10)
+engine_options = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+else:
+    engine_options.update({"pool_size": 5, "max_overflow": 10})
+engine = create_engine(DATABASE_URL, **engine_options)
 try: Base.metadata.create_all(engine)
 except OperationalError as e: logger.critical(f"Failed to connect to database: {e}. Exiting."); sys.exit(1)
 Session = sessionmaker(bind=engine)
@@ -208,8 +218,11 @@ async def view_db_table(update: Update, context: ContextTypes.DEFAULT_TYPE, tabl
     session = Session()
     feedback = await update.message.reply_text(f"Fetching data from table `{table_name}`...", parse_mode=ParseMode.MARKDOWN)
     try:
-        query = f"SELECT * FROM {table_name};"
-        result_proxy = session.execute(query)
+        table_name = table_name.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
+            await feedback.edit_text("Invalid table name.")
+            return
+        result_proxy = session.execute(text(f"SELECT * FROM {table_name}"))
         result = result_proxy.fetchall()
         if not result:
             await feedback.edit_text(f"Table `{table_name}` is empty or does not exist.")
@@ -949,7 +962,7 @@ async def youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE, qu
             'quiet': True, 
             'default_search': 'ytsearch5',
             'ignoreerrors': True, # Keep to ignore soft errors
-            'cookiefile': YTDL_COOKIES_FILE, # NEW: Pass cookies to bypass login
+            **YTDL_COOKIE_OPTIONS,
         }
         # --- END FIX ---
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -985,7 +998,7 @@ async def search_and_play_song(update: Update, context: ContextTypes.DEFAULT_TYP
             'quiet': True, 
             'default_search': 'ytsearch1',
             'ignoreerrors': True,
-            'cookiefile': YTDL_COOKIES_FILE, # NEW: Pass cookies to bypass login
+            **YTDL_COOKIE_OPTIONS,
         }
         # --- END FIX ---
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1029,12 +1042,18 @@ async def handle_audio_download(update: Update, context: ContextTypes.DEFAULT_TY
             'noplaylist': True,
             'quiet': True,
             'ignoreerrors': True,
-            'cookiefile': YTDL_COOKIES_FILE, # NEW: Pass cookies to bypass login
+            **YTDL_COOKIE_OPTIONS,
         }
         # --- END FIX ---
         with yt_dlp.YoutubeDL(audio_opts) as ydl:
             info = ydl.extract_info(video_id, download=True)
-        audio_path = os.path.join(temp_dir, os.listdir(temp_dir)[0])
+        downloaded_files = [
+            name for name in os.listdir(temp_dir)
+            if os.path.isfile(os.path.join(temp_dir, name))
+        ]
+        if not downloaded_files or not info:
+            raise RuntimeError("yt-dlp did not produce an audio file")
+        audio_path = os.path.join(temp_dir, downloaded_files[0])
         await query.edit_message_text("Sending audio...")
         with open(audio_path, 'rb') as f:
             await context.bot.send_audio(
@@ -1472,7 +1491,7 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
             'noplaylist': True,
             'quiet': True,
             'ignoreerrors': True,
-            'cookiefile': YTDL_COOKIES_FILE, # NEW: Pass cookies to bypass YouTube login
+            **YTDL_COOKIE_OPTIONS,
             # Force the best quality by prioritizing 4K, then 2K, then best video/audio combination
             'format': 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4' 
@@ -1791,10 +1810,10 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text("Translate service is not configured.")
         return
     text = text_to_translate or " ".join(context.args)
-    if not text:
+    if not text or " " not in text.strip():
         await update.message.reply_text("Format: `<language> <text>`")
         return
-    target_lang, text_to_trans = text.split(" ", 1)
+    target_lang, text_to_trans = text.strip().split(None, 1)
     prompt = f"Translate the following text to {target_lang}: {text_to_trans}"
     response = await asyncio.to_thread(gemini_model.generate_content, prompt)
     await update.message.reply_text(response.text)
@@ -1967,8 +1986,7 @@ async def display_pdf_results(feedback, results: list, source: str) -> None:
                 continue
         
         if keyboard:
-            # Store results in context for retrieval in callback
-            feedback.bot.context = results if hasattr(feedback.bot, 'context') else None
+            # Results are stored in context.user_data by the caller.
             await feedback.edit_text(f"[Found] Results from {source}. Choose one to download:", 
                                     reply_markup=InlineKeyboardMarkup(keyboard))
         else:
@@ -2275,19 +2293,24 @@ def main() -> None:
     application.add_handlers(callback_handlers)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
     
-    PORT = int(os.environ.get("PORT", 8443))
-    RENDER_APP_NAME = os.environ.get("RENDER_APP_NAME")
+    port = int(os.environ.get("PORT", "10000"))
+    webhook_base_url = os.environ.get("WEBHOOK_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+    legacy_render_name = os.environ.get("RENDER_APP_NAME")
+    if not webhook_base_url and legacy_render_name:
+        webhook_base_url = f"https://{legacy_render_name}.onrender.com"
 
-    if not RENDER_APP_NAME:
+    if webhook_base_url:
+        webhook_url = webhook_base_url.rstrip("/") + f"/{BOT_TOKEN}"
+        logger.info("Running in webhook mode on port %s.", port)
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=BOT_TOKEN,
+            webhook_url=webhook_url,
+        )
+    else:
         logger.info("Running in polling mode.")
         application.run_polling()
-    else:
-        WEBHOOK_URL = f"https://{RENDER_APP_NAME}.onrender.com/{BOT_TOKEN}"
-        logger.info(f"Running in webhook mode. URL: {WEBHOOK_URL}")
-        job_queue = application.job_queue
-        job_queue.run_repeating(callback=ping_job, interval=600, first=10, name="auto_ping", data={"webhook_url": WEBHOOK_URL})
-        logger.info("Auto-ping job scheduled.")
-        application.run_webhook(listen="0.0.0.0", port=PORT, url_path=BOT_TOKEN, webhook_url=WEBHOOK_URL)
 
 if __name__ == "__main__":
     main()
