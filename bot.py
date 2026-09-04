@@ -119,6 +119,14 @@ VIDEO_FORMAT_SELECTOR = (
     "best"
 )
 
+
+def video_format_selector(source_url: str) -> str:
+    """Return a selector compatible with adaptive and single-file posts."""
+    host = urlparse(source_url).netloc.lower().split(":", 1)[0].removeprefix("www.")
+    if host == "instagram.com" or host.endswith(".instagram.com"):
+        return "best[ext=mp4]/best"
+    return VIDEO_FORMAT_SELECTOR
+
 async def has_audio_stream(file_path: str) -> bool:
     """Return whether ffprobe detects at least one audio stream."""
     try:
@@ -1440,16 +1448,16 @@ async def download_content_from_url(update: Update, context: ContextTypes.DEFAUL
     temp_dir = os.path.join(DOWNLOAD_DIR, str(uuid.uuid4()))
     os.makedirs(temp_dir)
     try:
-        # --- 4K/HD AND YOUTUBE DOWNLOAD FIX APPLIED HERE ---
+        # Use a single-file fallback for Instagram, whose posts often do not
+        # expose separate video and audio formats.
         ydl_opts = {
             'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
             'noplaylist': True,
             'quiet': True,
             'ignoreerrors': True,
             **YTDL_COMMON_OPTIONS,
-            # Force the best quality by prioritizing 4K, then 2K, then best video/audio combination
-            'format': VIDEO_FORMAT_SELECTOR,
-            'merge_output_format': 'mp4' 
+            'format': video_format_selector(url),
+            'merge_output_format': 'mp4'
         }
         # --- END FIX ---
         

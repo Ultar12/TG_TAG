@@ -404,13 +404,18 @@ def _download_video_file_sync(
     try:
         raw_path = os.path.join(directory, "raw.media")
         options = _base_ytdl_options(common_options)
-        if _is_facebook_url(source_url):
+        source_host = urlparse(source_url).netloc.lower().split(":", 1)[0].removeprefix("www.")
+        if source_host == "instagram.com" or source_host.endswith(".instagram.com"):
+            # Instagram posts commonly expose one MP4 format, not an
+            # independent video/audio pair with height metadata.
+            format_selector = "best[ext=mp4]/best"
+        elif _is_facebook_url(source_url):
             format_selector = f"best[height<={max_height}]/best"
         else:
             format_selector = (
                 f"best[ext=mp4][height<={max_height}]/"
                 f"bestvideo[ext=mp4][height<={max_height}]+"
-                f"bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]"
+                f"bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]/best"
             )
 
         options.update(
