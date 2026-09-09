@@ -75,14 +75,13 @@ def _telegram_api(method: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     return data.get("result") or {}
 
 
-def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[str, list[dict[str, Any]], str]:
+def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[list[dict[str, Any]], str, str]:
     pack_name = _telegram_sticker_pack_name(pack_url)
     sticker_set = _telegram_api("getStickerSet", {"name": pack_name})
     stickers = sticker_set.get("stickers") or []
     if not stickers:
         raise MediaAPIError("The Telegram sticker pack is empty or unavailable.")
-    job_id = uuid.uuid4().hex
-    temp_dir = tempfile.mkdtemp(prefix=f"tg_tag_stickers_{job_id}_")
+    temp_dir = tempfile.mkdtemp(prefix="tg_tag_stickers_")
     results: list[dict[str, Any]] = []
     try:
         for index, sticker in enumerate(stickers, start=1):
@@ -140,7 +139,7 @@ def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[str, list[dict[
                 "emoji": sticker.get("emoji") or "",
                 "is_animated": bool(sticker.get("is_animated") or sticker.get("is_video")),
             })
-        return job_id, results, str(sticker_set.get("title") or pack_name)
+        return results, str(sticker_set.get("title") or pack_name), temp_dir
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
@@ -584,6 +583,27 @@ def _cleanup_telegram_sticker_jobs() -> None:
         TG_STICKER_JOBS.pop(job_id, None)
 
 
+async def _run_telegram_sticker_job(job_id: str, pack_url: Any) -> None:
+    job = TG_STICKER_JOBS.get(job_id)
+    if not job:
+        return
+    job["state"] = "processing"
+    try:
+        stickers, title, temp_dir = await asyncio.to_thread(
+            _download_telegram_sticker_pack_sync,
+            pack_url,
+        )
+        job.update({
+            "state": "ready",
+            "title": title,
+            "temp_dir": temp_dir,
+            "stickers": stickers,
+        })
+    except Exception as exc:
+        logger.exception("Telegram sticker job %s failed", job_id)
+        job.update({"state": "failed", "error": str(exc)})
+
+
 async def _run_play_job(
     job_id: str,
     query: str,
@@ -800,39 +820,49 @@ class TelegramStickerPackHandler(_BaseHandler):
         _cleanup_telegram_sticker_jobs()
         body = self._json_body()
         pack_url = body.get("url") or self.get_body_argument("url", default="")
-        try:
-            job_id, stickers, title = await asyncio.to_thread(
-                _download_telegram_sticker_pack_sync,
-                pack_url,
-            )
-            temp_dir = os.path.dirname(stickers[0]["path"])
-            TG_STICKER_JOBS[job_id] = {
-                "created_at": time.time(),
-                "temp_dir": temp_dir,
-                "stickers": stickers,
-                "title": title,
-            }
-            self.set_header("Content-Type", "application/json")
-            self.write({
-                "job_id": job_id,
-                "title": title,
-                "count": len(stickers),
-                "stickers": [
-                    {
-                        "index": item["index"],
-                        "emoji": item["emoji"],
-                        "url": f"/api/tg-stickers/{job_id}/{item['index']}",
-                    }
-                    for item in stickers
-                ],
-            })
-        except Exception as exc:
-            logger.exception("/api/tg-stickers failed")
-            self.set_status(502)
-            self.write({"error": str(exc)})
+        job_id = uuid.uuid4().hex
+        TG_STICKER_JOBS[job_id] = {
+            "created_at": time.time(),
+            "state": "queued",
+            "pack_url": pack_url,
+        }
+        asyncio.create_task(_run_telegram_sticker_job(job_id, pack_url))
+        self.set_status(202)
+        self.set_header("Content-Type", "application/json")
+        self.write({
+            "job_id": job_id,
+            "status_url": f"/api/tg-stickers/{job_id}",
+        })
 
     async def get(self) -> None:
         await self.post()
+
+
+class TelegramStickerStatusHandler(_BaseHandler):
+    async def get(self, job_id: str) -> None:
+        _cleanup_telegram_sticker_jobs()
+        job = TG_STICKER_JOBS.get(job_id)
+        if not job:
+            raise tornado.web.HTTPError(404, reason="Sticker job was not found or expired.")
+        self.set_header("Content-Type", "application/json")
+        self.set_status(200 if job.get("state") in {"ready", "failed"} else 202)
+        payload = {
+            "job_id": job_id,
+            "state": job.get("state"),
+            "title": job.get("title", ""),
+            "count": len(job.get("stickers", [])),
+            "error": job.get("error", ""),
+        }
+        if job.get("state") == "ready":
+            payload["stickers"] = [
+                {
+                    "index": item["index"],
+                    "emoji": item["emoji"],
+                    "url": f"/api/tg-stickers/{job_id}/{item['index']}",
+                }
+                for item in job.get("stickers", [])
+            ]
+        self.write(payload)
 
 
 class TelegramStickerHandler(_BaseHandler):
@@ -986,6 +1016,7 @@ async def _run_combined_webhook(
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
             (r"/api/tg-stickers/?", TelegramStickerPackHandler, {"common_options": common_options}),
+            (r"/api/tg-stickers/([a-f0-9]{32})/?", TelegramStickerStatusHandler, {"common_options": common_options}),
             (r"/api/tg-stickers/([a-f0-9]{32})/([0-9]+)/?", TelegramStickerHandler, {"common_options": common_options}),
             (r"/api/play/([a-f0-9]{32})/result/?", PlayJobResultHandler, {"common_options": common_options}),
             (r"/api/play/([a-f0-9]{32})/?", PlayJobStatusHandler, {"common_options": common_options}),
