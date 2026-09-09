@@ -116,7 +116,8 @@ def _download_telegram_sticker_pack_sync(
                         "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", source_path,
                         "-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,"
                         "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba",
-                        "-t", "10", "-an", os.path.join(frames_dir, "frame-%05d.png"),
+                        "-fps_mode", "passthrough", "-an",
+                        os.path.join(frames_dir, "frame-%05d.png"),
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
@@ -142,11 +143,31 @@ def _download_telegram_sticker_pack_sync(
                             error_tail = conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
                             raise MediaAPIError(f"PNG-to-WebP conversion failed: {error_tail}")
                         webp_frames.append(frame_webp)
+                    # Keep the source frame rate instead of assuming 30 FPS;
+                    # using a fixed duration can make the animation end early
+                    # or play at the wrong speed.
+                    probe = subprocess.run(
+                        [
+                            "ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=avg_frame_rate",
+                            "-of", "default=nw=1:nk=1", source_path,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                        check=False,
+                    )
+                    rate = probe.stdout.strip()
+                    try:
+                        numerator, denominator = (int(value) for value in rate.split("/", 1))
+                        frame_duration = max(1, round(1000 * denominator / numerator))
+                    except (ValueError, ZeroDivisionError):
+                        frame_duration = 33
                     mux_args = ["webpmux"]
                     for frame_webp in webp_frames:
                         # webpmux requires the duration property to use the
                         # explicit '+' prefix, e.g. '+33' milliseconds.
-                        mux_args.extend(["-frame", frame_webp, "+33"])
+                        mux_args.extend(["-frame", frame_webp, f"+{frame_duration}"])
                     mux_args.extend(["-loop", "0", "-o", output_path])
                     mux = subprocess.run(
                         mux_args,
