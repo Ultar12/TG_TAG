@@ -23,7 +23,7 @@ Module({
         return message.sendReply('_TG_TAG PLAY_URL is not configured._');
     }
 
-    const progress = await message.sendReply('_Starting Telegram sticker processing..._');
+    const progress = await message.sendReply('_Downloading stickers...._');
     const sent = new Set();
     let tempCounter = 0;
     let lastSentAt = 0;
@@ -44,17 +44,15 @@ Module({
         fs.writeFileSync(inputPath, Buffer.from(await stickerResponse.arrayBuffer()));
         let brandedPath = inputPath;
         try {
-            // Some EXIF/WebP libraries flatten animations. Only brand static
-            // stickers; animated stickers must use the original WebP bytes.
-            if (!sticker.is_animated) {
-                brandedPath = await addExif(inputPath, {
-                    packname: 'Ultar Sync',
-                    author: 'Ultar Sync',
-                    categories: '⭐',
-                    android: 'https://github.com/Ultar12/TG_TAG',
-                    ios: 'https://github.com/Ultar12/TG_TAG'
-                });
-            }
+            // addExif writes the Ultar Sync sticker name while retaining the
+            // animated WebP container and its complete frame sequence.
+            brandedPath = await addExif(inputPath, {
+                packname: 'Ultar Sync',
+                author: 'Ultar Sync',
+                categories: '⭐',
+                android: 'https://github.com/Ultar12/TG_TAG',
+                ios: 'https://github.com/Ultar12/TG_TAG'
+            });
             await message.sendMessage(fs.readFileSync(brandedPath), 'sticker');
             sent.add(sticker.index);
             lastSentAt = Date.now();
