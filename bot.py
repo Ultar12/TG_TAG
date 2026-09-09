@@ -98,10 +98,15 @@ except Exception as e: openai_client = None; logger.error(f"Failed to configure 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-# NEW: Define YouTube cookies file
-YTDL_COOKIES_FILE = os.environ.get("YTDL_COOKIES_FILE", "cookies_youtube.txt")
+# Prefer the configured path, then use either repository cookie filename.
+configured_cookie_file = os.environ.get("YTDL_COOKIES_FILE")
+cookie_candidates = [configured_cookie_file, "cookies_youtube.txt", "cookies.txt"]
+YTDL_COOKIES_FILE = next(
+    (path for path in cookie_candidates if path and os.path.isfile(path) and os.path.getsize(path) > 0),
+    None,
+)
 YTDL_COOKIE_OPTIONS = {}
-if os.path.isfile(YTDL_COOKIES_FILE) and os.path.getsize(YTDL_COOKIES_FILE) > 0:
+if YTDL_COOKIES_FILE:
     YTDL_COOKIE_OPTIONS["cookiefile"] = YTDL_COOKIES_FILE
 else:
     logger.info("No YouTube cookies file configured; yt-dlp will run without cookies.")

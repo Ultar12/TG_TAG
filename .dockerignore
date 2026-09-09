@@ -1,7 +1,5 @@
 .git
 .gitignore
-cookies.txt
-cookies_youtube.txt
 downloads/
 __pycache__/
 *.py[cod]

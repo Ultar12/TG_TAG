@@ -1,7 +1,6 @@
 # Local secrets and credentials
 .env
 
-
 # Runtime and build artifacts
 __pycache__/
 *.py[cod]
