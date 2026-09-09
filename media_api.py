@@ -75,7 +75,10 @@ def _telegram_api(method: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     return data.get("result") or {}
 
 
-def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[list[dict[str, Any]], str, str]:
+def _download_telegram_sticker_pack_sync(
+    pack_url: str,
+    on_sticker: Any = None,
+) -> tuple[list[dict[str, Any]], str, str]:
     pack_name = _telegram_sticker_pack_name(pack_url)
     sticker_set = _telegram_api("getStickerSet", {"name": pack_name})
     stickers = sticker_set.get("stickers") or []
@@ -104,41 +107,37 @@ def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[list[dict[str, 
             if suffix == ".webp":
                 shutil.copyfile(source_path, output_path)
             elif suffix == ".webm":
-                png_path = os.path.join(temp_dir, f"sticker-{index}.png")
-                frame_conversion = subprocess.run(
+                # Keep the complete animation. Extracting one frame here was
+                # the reason every Telegram video sticker became static.
+                animated_conversion = subprocess.run(
                     [
-                        "ffmpeg", "-y", "-i", source_path,
+                        "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", source_path,
                         "-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,"
                         "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba",
-                        "-frames:v", "1", "-an", png_path,
+                        "-t", "10", "-an", "-c:v", "libwebp_anim",
+                        "-loop", "0", "-lossless", "0", "-q:v", "70", output_path,
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     timeout=60,
                 )
-                if frame_conversion.returncode != 0:
-                    error_tail = frame_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
-                    raise MediaAPIError(f"WebM frame extraction failed: {error_tail}")
-                webp_conversion = subprocess.run(
-                    ["cwebp", "-quiet", "-q", "75", png_path, "-o", output_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    timeout=60,
-                )
-                if webp_conversion.returncode != 0:
-                    error_tail = webp_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
-                    raise MediaAPIError(f"PNG-to-WebP conversion failed: {error_tail}")
+                if animated_conversion.returncode != 0:
+                    error_tail = animated_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
+                    raise MediaAPIError(f"Animated WebP conversion failed: {error_tail}")
             else:
                 raise MediaAPIError(
                     f"Sticker {index} is animated (.tgs), which cannot be converted to a WhatsApp sticker by this build."
                 )
-            results.append({
+            item = {
                 "index": index,
                 "path": output_path,
                 "filename": f"sticker-{index}.webp",
                 "emoji": sticker.get("emoji") or "",
                 "is_animated": bool(sticker.get("is_animated") or sticker.get("is_video")),
-            })
+            }
+            results.append(item)
+            if on_sticker is not None:
+                on_sticker(item)
         return results, str(sticker_set.get("title") or pack_name), temp_dir
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -588,10 +587,16 @@ async def _run_telegram_sticker_job(job_id: str, pack_url: Any) -> None:
     if not job:
         return
     job["state"] = "processing"
+    job["stickers"] = []
     try:
+        def publish_sticker(item: dict[str, Any]) -> None:
+            job.setdefault("stickers", []).append(item)
+            job["updated_at"] = time.time()
+
         stickers, title, temp_dir = await asyncio.to_thread(
             _download_telegram_sticker_pack_sync,
             pack_url,
+            publish_sticker,
         )
         job.update({
             "state": "ready",
@@ -853,11 +858,12 @@ class TelegramStickerStatusHandler(_BaseHandler):
             "count": len(job.get("stickers", [])),
             "error": job.get("error", ""),
         }
-        if job.get("state") == "ready":
+        if job.get("state") in {"processing", "ready"}:
             payload["stickers"] = [
                 {
                     "index": item["index"],
                     "emoji": item["emoji"],
+                    "is_animated": bool(item.get("is_animated")),
                     "url": f"/api/tg-stickers/{job_id}/{item['index']}",
                 }
                 for item in job.get("stickers", [])
