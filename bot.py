@@ -98,9 +98,9 @@ except Exception as e: openai_client = None; logger.error(f"Failed to configure 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-# Prefer the configured path, then use either repository cookie filename.
+# Prefer the configured path, then use the repository's supported cookie file.
 configured_cookie_file = os.environ.get("YTDL_COOKIES_FILE")
-cookie_candidates = [configured_cookie_file, "cookies_youtube.txt", "cookies.txt"]
+cookie_candidates = [configured_cookie_file, "cookies_youtube.txt"]
 YTDL_COOKIES_FILE = next(
     (path for path in cookie_candidates if path and os.path.isfile(path) and os.path.getsize(path) > 0),
     None,
