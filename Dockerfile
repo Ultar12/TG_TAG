@@ -17,7 +17,8 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
-COPY bot.py media_api.py ./
+# bot.py loads this tracked repository .env with python-dotenv.
+COPY bot.py media_api.py .env ./
 
 RUN mkdir -p /app/downloads
 
