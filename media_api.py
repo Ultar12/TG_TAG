@@ -105,21 +105,30 @@ def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[str, list[dict[
             if suffix == ".webp":
                 shutil.copyfile(source_path, output_path)
             elif suffix == ".webm":
-                conversion = subprocess.run(
+                png_path = os.path.join(temp_dir, f"sticker-{index}.png")
+                frame_conversion = subprocess.run(
                     [
                         "ffmpeg", "-y", "-i", source_path,
                         "-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,"
                         "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba",
-                        "-frames:v", "1", "-an", "-c:v", "libwebp",
-                        "-lossless", "0", "-q:v", "75", output_path,
+                        "-frames:v", "1", "-an", png_path,
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     timeout=60,
                 )
-                if conversion.returncode != 0:
-                    error_tail = conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
-                    raise MediaAPIError(f"WebM sticker conversion failed: {error_tail}")
+                if frame_conversion.returncode != 0:
+                    error_tail = frame_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
+                    raise MediaAPIError(f"WebM frame extraction failed: {error_tail}")
+                webp_conversion = subprocess.run(
+                    ["cwebp", "-quiet", "-q", "75", png_path, "-o", output_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                )
+                if webp_conversion.returncode != 0:
+                    error_tail = webp_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
+                    raise MediaAPIError(f"PNG-to-WebP conversion failed: {error_tail}")
             else:
                 raise MediaAPIError(
                     f"Sticker {index} is animated (.tgs), which cannot be converted to a WhatsApp sticker by this build."
