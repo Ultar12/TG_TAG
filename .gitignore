@@ -1,7 +1,6 @@
 # Local secrets and credentials
 .env
-cookies.txt
-cookies_youtube.txt
+
 
 # Runtime and build artifacts
 __pycache__/
