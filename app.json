@@ -1,6 +1,5 @@
 {
   "name": "TG_TAG Telegram Bot",
-  "stack": "container",
   "description": "A multi-purpose Telegram bot with AI, media, utility, and database features.",
   "repository": "https://github.com/Ultar12/TG_TAG",
   "keywords": [
