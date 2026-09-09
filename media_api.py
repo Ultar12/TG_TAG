@@ -144,7 +144,9 @@ def _download_telegram_sticker_pack_sync(
                         webp_frames.append(frame_webp)
                     mux_args = ["webpmux"]
                     for frame_webp in webp_frames:
-                        mux_args.extend(["-frame", frame_webp, "33"])
+                        # webpmux requires the duration property to use the
+                        # explicit '+' prefix, e.g. '+33' milliseconds.
+                        mux_args.extend(["-frame", frame_webp, "+33"])
                     mux_args.extend(["-loop", "0", "-o", output_path])
                     mux = subprocess.run(
                         mux_args,
