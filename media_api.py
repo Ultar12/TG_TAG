@@ -107,23 +107,56 @@ def _download_telegram_sticker_pack_sync(
             if suffix == ".webp":
                 shutil.copyfile(source_path, output_path)
             elif suffix == ".webm":
-                # Keep the complete animation. Extracting one frame here was
-                # the reason every Telegram video sticker became static.
-                animated_conversion = subprocess.run(
+                # Heroku's FFmpeg does not provide libwebp_anim. Extract all
+                # frames, encode them with cwebp, then mux them with webpmux.
+                frames_dir = os.path.join(temp_dir, f"frames-{index}")
+                os.makedirs(frames_dir, exist_ok=True)
+                frame_conversion = subprocess.run(
                     [
                         "ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", source_path,
                         "-vf", "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,"
                         "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba",
-                        "-t", "10", "-an", "-c:v", "libwebp_anim",
-                        "-loop", "0", "-lossless", "0", "-q:v", "70", output_path,
+                        "-t", "10", "-an", os.path.join(frames_dir, "frame-%05d.png"),
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     timeout=60,
                 )
-                if animated_conversion.returncode != 0:
-                    error_tail = animated_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
-                    raise MediaAPIError(f"Animated WebP conversion failed: {error_tail}")
+                if frame_conversion.returncode != 0:
+                    error_tail = frame_conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
+                    raise MediaAPIError(f"WebM frame extraction failed: {error_tail}")
+                frame_paths = sorted(Path(frames_dir).glob("frame-*.png"))
+                if not frame_paths:
+                    raise MediaAPIError(f"WebM sticker {index} produced no frames.")
+                webp_frames: list[str] = []
+                try:
+                    for frame_path in frame_paths:
+                        frame_webp = str(frame_path.with_suffix(".webp"))
+                        conversion = subprocess.run(
+                            ["cwebp", "-quiet", "-q", "75", str(frame_path), "-o", frame_webp],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            timeout=30,
+                        )
+                        if conversion.returncode != 0:
+                            error_tail = conversion.stderr.decode("utf-8", "replace")[-1200:].strip()
+                            raise MediaAPIError(f"PNG-to-WebP conversion failed: {error_tail}")
+                        webp_frames.append(frame_webp)
+                    mux_args = ["webpmux"]
+                    for frame_webp in webp_frames:
+                        mux_args.extend(["-frame", frame_webp, "33"])
+                    mux_args.extend(["-loop", "0", "-o", output_path])
+                    mux = subprocess.run(
+                        mux_args,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        timeout=60,
+                    )
+                    if mux.returncode != 0:
+                        error_tail = mux.stderr.decode("utf-8", "replace")[-1200:].strip()
+                        raise MediaAPIError(f"Animated WebP muxing failed: {error_tail}")
+                finally:
+                    shutil.rmtree(frames_dir, ignore_errors=True)
             else:
                 raise MediaAPIError(
                     f"Sticker {index} is animated (.tgs), which cannot be converted to a WhatsApp sticker by this build."
