@@ -27,6 +27,9 @@ MAX_API_FILE_BYTES = 2 * 1024 * 1024 * 1024
 PLAY_JOB_TTL_SECONDS = 1800
 PLAY_JOB_MAX_ACTIVE = 2
 PLAY_JOBS: dict[str, dict[str, Any]] = {}
+TG_STICKER_JOBS: dict[str, dict[str, Any]] = {}
+TG_STICKER_JOB_TTL_SECONDS = 1800
+TG_STICKER_PACK_RE = re.compile(r"^https?://t\.me/addstickers/([A-Za-z0-9_-]+)(?:\?.*)?$", re.IGNORECASE)
 MEDIA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -47,6 +50,83 @@ def _safe_url(value: Any) -> str:
 
 def _safe_query(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:300]
+
+
+def _telegram_sticker_pack_name(value: Any) -> str:
+    match = TG_STICKER_PACK_RE.match(str(value or "").strip())
+    if not match:
+        raise MediaAPIError("Use a Telegram sticker-pack URL such as https://t.me/addstickers/PackName.")
+    return match.group(1)
+
+
+def _telegram_api(method: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    token = os.environ.get("BOT_TOKEN", "").strip()
+    if not token:
+        raise MediaAPIError("TG_TAG BOT_TOKEN is not configured.")
+    response = requests.post(
+        f"https://api.telegram.org/bot{token}/{method}",
+        json=dict(payload),
+        timeout=45,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("ok"):
+        raise MediaAPIError(str(data.get("description") or f"Telegram API {method} failed."))
+    return data.get("result") or {}
+
+
+def _download_telegram_sticker_pack_sync(pack_url: str) -> tuple[str, list[dict[str, Any]], str]:
+    pack_name = _telegram_sticker_pack_name(pack_url)
+    sticker_set = _telegram_api("getStickerSet", {"name": pack_name})
+    stickers = sticker_set.get("stickers") or []
+    if not stickers:
+        raise MediaAPIError("The Telegram sticker pack is empty or unavailable.")
+    job_id = uuid.uuid4().hex
+    temp_dir = tempfile.mkdtemp(prefix=f"tg_tag_stickers_{job_id}_")
+    results: list[dict[str, Any]] = []
+    try:
+        for index, sticker in enumerate(stickers, start=1):
+            file_info = _telegram_api("getFile", {"file_id": sticker["file_id"]})
+            file_path = str(file_info.get("file_path") or "")
+            if not file_path:
+                raise MediaAPIError(f"Telegram did not return a file path for sticker {index}.")
+            token = os.environ["BOT_TOKEN"].strip()
+            response = requests.get(
+                f"https://api.telegram.org/file/bot{token}/{file_path}",
+                timeout=90,
+            )
+            response.raise_for_status()
+            if len(response.content) > 20 * 1024 * 1024:
+                raise MediaAPIError(f"Sticker {index} exceeds the 20 MB limit.")
+            suffix = Path(file_path).suffix.lower() or ".bin"
+            source_path = os.path.join(temp_dir, f"source-{index}{suffix}")
+            output_path = os.path.join(temp_dir, f"sticker-{index}.webp")
+            Path(source_path).write_bytes(response.content)
+            if suffix == ".webp":
+                shutil.copyfile(source_path, output_path)
+            elif suffix == ".webm":
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", source_path, "-frames:v", "1", output_path],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                )
+            else:
+                raise MediaAPIError(
+                    f"Sticker {index} is animated (.tgs), which cannot be converted to a WhatsApp sticker by this build."
+                )
+            results.append({
+                "index": index,
+                "path": output_path,
+                "filename": f"sticker-{index}.webp",
+                "emoji": sticker.get("emoji") or "",
+                "is_animated": bool(sticker.get("is_animated") or sticker.get("is_video")),
+            })
+        return job_id, results, str(sticker_set.get("title") or pack_name)
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
 PINTEREST_HOSTS = {"pinterest.com", "pin.it"}
@@ -475,6 +555,18 @@ def _cleanup_play_jobs() -> None:
         PLAY_JOBS.pop(job_id, None)
 
 
+def _cleanup_telegram_sticker_jobs() -> None:
+    now = time.time()
+    expired = []
+    for job_id, job in TG_STICKER_JOBS.items():
+        if now - float(job.get("created_at", now)) <= TG_STICKER_JOB_TTL_SECONDS:
+            continue
+        shutil.rmtree(str(job.get("temp_dir") or ""), ignore_errors=True)
+        expired.append(job_id)
+    for job_id in expired:
+        TG_STICKER_JOBS.pop(job_id, None)
+
+
 async def _run_play_job(
     job_id: str,
     query: str,
@@ -686,6 +778,62 @@ class DownloadHandler(_BaseHandler):
             self.write({"error": str(exc)})
 
 
+class TelegramStickerPackHandler(_BaseHandler):
+    async def post(self) -> None:
+        _cleanup_telegram_sticker_jobs()
+        body = self._json_body()
+        pack_url = body.get("url") or self.get_body_argument("url", default="")
+        try:
+            job_id, stickers, title = await asyncio.to_thread(
+                _download_telegram_sticker_pack_sync,
+                pack_url,
+            )
+            temp_dir = os.path.dirname(stickers[0]["path"])
+            TG_STICKER_JOBS[job_id] = {
+                "created_at": time.time(),
+                "temp_dir": temp_dir,
+                "stickers": stickers,
+                "title": title,
+            }
+            self.set_header("Content-Type", "application/json")
+            self.write({
+                "job_id": job_id,
+                "title": title,
+                "count": len(stickers),
+                "stickers": [
+                    {
+                        "index": item["index"],
+                        "emoji": item["emoji"],
+                        "url": f"/api/tg-stickers/{job_id}/{item['index']}",
+                    }
+                    for item in stickers
+                ],
+            })
+        except Exception as exc:
+            logger.exception("/api/tg-stickers failed")
+            self.set_status(502)
+            self.write({"error": str(exc)})
+
+    async def get(self) -> None:
+        await self.post()
+
+
+class TelegramStickerHandler(_BaseHandler):
+    async def get(self, job_id: str, index: str) -> None:
+        _cleanup_telegram_sticker_jobs()
+        job = TG_STICKER_JOBS.get(job_id)
+        if not job:
+            raise tornado.web.HTTPError(404, reason="Sticker pack was not found or expired.")
+        try:
+            item = next(sticker for sticker in job["stickers"] if str(sticker["index"]) == str(index))
+        except StopIteration as exc:
+            raise tornado.web.HTTPError(404, reason="Sticker was not found.") from exc
+        path = str(item["path"])
+        if not os.path.isfile(path):
+            raise tornado.web.HTTPError(410, reason="Sticker is no longer available.")
+        await self._stream_file(path, str(item["filename"]), "image/webp")
+
+
 class PlayJobCreateHandler(_BaseHandler):
     async def post(self) -> None:
         body = self._json_body()
@@ -820,6 +968,8 @@ async def _run_combined_webhook(
         [
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
+            (r"/api/tg-stickers/?", TelegramStickerPackHandler, {"common_options": common_options}),
+            (r"/api/tg-stickers/([a-f0-9]{32})/([0-9]+)/?", TelegramStickerHandler, {"common_options": common_options}),
             (r"/api/play/([a-f0-9]{32})/result/?", PlayJobResultHandler, {"common_options": common_options}),
             (r"/api/play/([a-f0-9]{32})/?", PlayJobStatusHandler, {"common_options": common_options}),
             (r"/api/play-hook/?", PlayJobCreateHandler, {"common_options": common_options}),
