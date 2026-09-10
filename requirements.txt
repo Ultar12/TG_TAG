@@ -1,5 +1,7 @@
 # Core bot library with rate limiting, scheduled jobs, and webhook support
 python-telegram-bot[rate-limiter,job-queue,webhooks]==22.8
+# Telegram user-session generation for the admin-only /session command
+Telethon==1.42.0
 
 # Web/runtime support
 Flask==3.1.3

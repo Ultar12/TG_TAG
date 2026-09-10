@@ -30,6 +30,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboard
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, AIORateLimiter, JobQueue
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
+from session_generator import build_session_conversation, configure_session_conversation
 
 from sqlalchemy import create_engine, Column, String, text
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -242,6 +243,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/ytsearch <query>**: Search for YouTube videos.\n"
         "**/play <song name>**: Search and download a song or video.\n"
         "**/tts <text>**: Convert text to speech.\n"
+        "**/session**: Generate a Telethon session string (admin only, private chat).\n"
         "**/connect +<number>**: Connect to a WhatsApp account using a pairing code."
     )
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
@@ -2309,7 +2311,8 @@ async def handle_suggestion(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 def main() -> None:
     application = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).job_queue(JobQueue()).build()
-    
+    application.bot_data["admin_id"] = ADMIN_ID
+    session_conversation = configure_session_conversation(build_session_conversation(ADMIN_ID))
     cmd_handlers = [
         CommandHandler("start", start), CommandHandler("help", help_command),
 CommandHandler("create", create_image_command),
@@ -2321,7 +2324,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("gmail", gmail_command), CommandHandler("screenshot", screenshot_command),
         CommandHandler("movie", movie_command), CommandHandler("tts", tts_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
-        CommandHandler("db", db_command)
+        CommandHandler("db", db_command), session_conversation
     ]
     
     menu_button_texts = {
