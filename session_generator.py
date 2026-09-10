@@ -1,6 +1,8 @@
 """Admin-only Telethon StringSession generator for the Telegram bot."""
 
 import logging
+import re
+from html import escape as html_escape
 
 from telegram import Update
 from telegram.ext import ConversationHandler, ContextTypes
@@ -28,6 +30,44 @@ async def _delete_user_message(update: Update) -> None:
             pass
 
 
+async def _delete_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete a temporary bot message after its short security window."""
+    data = context.job.data
+    try:
+        await context.bot.delete_message(chat_id=data["chat_id"], message_id=data["message_id"])
+    except Exception:
+        logger.debug("Temporary session message could not be deleted", exc_info=True)
+
+
+async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Replace the previous bot prompt so completed stages do not remain in chat."""
+    previous = context.user_data.pop("session_prompt", None)
+    if previous:
+        try:
+            await context.bot.delete_message(
+                chat_id=previous["chat_id"], message_id=previous["message_id"]
+            )
+        except Exception:
+            pass
+    message = await update.effective_chat.send_message(text)
+    context.user_data["session_prompt"] = {
+        "chat_id": message.chat_id,
+        "message_id": message.message_id,
+    }
+    return message
+
+
+def _normalize_phone(raw_phone: str) -> str | None:
+    """Accept +country, spaced digits, or 00country formats and return E.164-like text."""
+    value = raw_phone.strip()
+    digits = re.sub(r"\D", "", value)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if not 8 <= len(digits) <= 15:
+        return None
+    return f"+{digits}"
+
+
 async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     admin_id = context.application.bot_data["admin_id"]
     if not _is_private_admin(update, admin_id):
@@ -36,7 +76,8 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     context.user_data.clear()
-    await update.message.reply_text(
+    await _send_prompt(
+        update, context,
         "Session generator started.\n\n"
         "Send your Telegram API ID (the numeric value from my.telegram.org).\n"
         "Use /cancel to stop."
@@ -56,7 +97,7 @@ async def receive_api_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return API_ID
     context.user_data["session_api_id"] = api_id
     await _delete_user_message(update)
-    await update.effective_chat.send_message("Now send your API hash.")
+    await _send_prompt(update, context, "Now send your API hash.")
     return API_HASH
 
 
@@ -69,8 +110,10 @@ async def receive_api_hash(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return API_HASH
     context.user_data["session_api_hash"] = api_hash
     await _delete_user_message(update)
-    await update.effective_chat.send_message(
-        "Send the phone number for the Telegram account, including the country code (for example +15551234567)."
+    await _send_prompt(
+        update, context,
+        "Send the phone number for the Telegram account. You may use + or spaces, for example:\n"
+        "+234 916 391 6314\n234 9163916314"
     )
     return PHONE
 
@@ -78,9 +121,11 @@ async def receive_api_hash(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message:
         return PHONE
-    phone = update.message.text.strip()
-    if not phone.startswith("+") or len(phone) < 8:
-        await update.message.reply_text("Please send a phone number with country code, starting with +.")
+    phone = _normalize_phone(update.message.text)
+    if not phone:
+        await update.message.reply_text(
+            "Please send a valid phone number with country code. + and spaces are optional, for example 234 9163916314."
+        )
         return PHONE
 
     client = TelegramClient(
@@ -101,7 +146,8 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["session_client"] = client
     context.user_data["session_phone"] = phone
     await _delete_user_message(update)
-    await update.effective_chat.send_message(
+    await _send_prompt(
+        update, context,
         "A login code was sent by Telegram. Send that code here. If Telegram displays it with spaces, send it without spaces."
     )
     return CODE
@@ -119,7 +165,7 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await client.sign_in(phone=context.user_data["session_phone"], code=code)
     except SessionPasswordNeededError:
         await _delete_user_message(update)
-        await update.effective_chat.send_message("Two-step verification is enabled. Send your Telegram 2FA password.")
+        await _send_prompt(update, context, "Two-step verification is enabled. Send your Telegram 2FA password.")
         return PASSWORD
     except Exception as exc:
         logger.warning("Telethon sign-in failed: %s", exc)
@@ -156,9 +202,25 @@ async def _finish_session(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
     try:
         string = client.session.save()
         await client.send_message("me", f"Generated Telethon session string:\n\n{string}")
-        await update.effective_chat.send_message(
-            "Session generated successfully and sent to your Telegram Saved Messages. "
-            "For security, it is not displayed in this bot chat."
+        prompt = context.user_data.pop("session_prompt", None)
+        if prompt:
+            try:
+                await context.bot.delete_message(
+                    chat_id=prompt["chat_id"], message_id=prompt["message_id"]
+                )
+            except Exception:
+                pass
+        output = await update.effective_chat.send_message(
+            "<b>Session generated.</b> It was also sent to Saved Messages.\n\n"
+            "Tap the code below to copy it. This message will be deleted in 1 minute.\n\n"
+            f"<code>{html_escape(string)}</code>",
+            parse_mode="HTML",
+        )
+        context.job_queue.run_once(
+            _delete_message_job,
+            when=60,
+            data={"chat_id": output.chat_id, "message_id": output.message_id},
+            name=f"delete-session-{output.message_id}",
         )
     except Exception as exc:
         logger.exception("Could not save generated Telethon session: %s", exc)
@@ -173,6 +235,12 @@ async def cancel_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     client = context.user_data.pop("session_client", None)
     if client:
         await client.disconnect()
+    prompt = context.user_data.pop("session_prompt", None)
+    if prompt:
+        try:
+            await context.bot.delete_message(chat_id=prompt["chat_id"], message_id=prompt["message_id"])
+        except Exception:
+            pass
     context.user_data.clear()
     if update.message:
         await update.message.reply_text("Session generation cancelled.")
