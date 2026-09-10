@@ -112,8 +112,7 @@ async def receive_api_hash(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _delete_user_message(update)
     await _send_prompt(
         update, context,
-        "Send the phone number for the Telegram account. You may use + or spaces, for example:\n"
-        "+234 916 391 6314\n234 9163916314"
+        "Send the phone number for the Telegram account."
     )
     return PHONE
 
