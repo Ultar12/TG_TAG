@@ -152,14 +152,21 @@ async def has_audio_stream(file_path: str) -> bool:
 async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Extract representative frames from a Telegram video and send them as photos."""
     message = update.message
-    if not message or not message.video:
+    if not message:
+        return
+    media = message.video
+    if not media and message.document and (message.document.mime_type or "").startswith("video/"):
+        media = message.document
+    if not media and message.animation:
+        media = message.animation
+    if not media:
         return
     temp_dir = os.path.join(DOWNLOAD_DIR, f"frames_{uuid.uuid4().hex}")
     os.makedirs(temp_dir, exist_ok=True)
     feedback = await message.reply_text("Extracting good moments from your video...")
     video_path = os.path.join(temp_dir, "source.mp4")
     try:
-        telegram_file = await message.video.get_file()
+        telegram_file = await media.get_file()
         await telegram_file.download_to_drive(video_path)
         probe = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -2501,7 +2508,7 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handlers(cmd_handlers)
     application.add_handlers(msg_handlers)
     application.add_handlers(callback_handlers)
-    application.add_handler(MessageHandler(filters.VIDEO, video_to_photos))
+    application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION | filters.Document.ALL, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
     
     port = int(os.environ.get("PORT", "10000"))
