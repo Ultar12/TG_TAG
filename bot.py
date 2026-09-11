@@ -1643,6 +1643,8 @@ def media_api_error(response) -> str:
         return "Not found. Try another link."
     if re.search(r"too large|size limit|payload", raw_error, re.IGNORECASE):
         return "File too large to send."
+    if re.search(r"tiktok could not be downloaded|tiktok.*downloader", raw_error, re.IGNORECASE):
+        return "TikTok could not be downloaded right now. Try the link again later."
     return "Download failed. Please try again."
 
 

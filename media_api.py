@@ -988,7 +988,15 @@ class DownloadHandler(_BaseHandler):
         except Exception as exc:
             logger.exception("/api/download failed for %s", url)
             self.set_status(502)
-            self.write({"error": str(exc)})
+            if "tiktok.com" in host:
+                self.write({
+                    "error": (
+                        "TikTok could not be downloaded right now. "
+                        "The TikTok page or downloader response changed; try the link again later."
+                    )
+                })
+            else:
+                self.write({"error": str(exc)})
 
 
 class TelegramStickerPackHandler(_BaseHandler):
