@@ -26,7 +26,7 @@ import random
 import subprocess # For running the Node.js script
 import datetime # For the recurring email job
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, AIORateLimiter, JobQueue
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
@@ -1292,11 +1292,11 @@ async def try_tikwm_api(url: str, feedback) -> dict:
         
         if slides and isinstance(slides, list) and len(slides) > 0:
             logger.info(f"Found {len(slides)} slides in tikwm response")
-            return {'type': 'slideshow', 'slides': slides[:10]}
+            return {'type': 'slideshow', 'slides': slides}
         
         if images and isinstance(images, list) and len(images) > 0:
             logger.info(f"Found {len(images)} images in tikwm response")
-            return {'type': 'slideshow', 'slides': images[:10]}
+            return {'type': 'slideshow', 'slides': images}
         
         # Check for video
         video_url = media_data.get('play') or media_data.get('download_addr') or media_data.get('video_url')
@@ -1379,7 +1379,7 @@ async def send_tiktok_result(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 return
             
             media = []
-            for idx, img in enumerate(slides[:10]):
+            for idx, img in enumerate(slides):
                 try:
                     img_url = None
                     if isinstance(img, dict):
@@ -1388,24 +1388,45 @@ async def send_tiktok_result(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         img_url = img
                     
                     if img_url and isinstance(img_url, str) and len(img_url) > 0:
-                        media.append({
-                            "type": "photo",
-                            "media": img_url,
-                            "caption": "[TikTok] Slideshow" if idx == 0 else None,
-                        })
+                        media.append(InputMediaPhoto(
+                            media=img_url,
+                            caption="[TikTok] Slideshow" if idx == 0 else None,
+                        ))
                 except Exception as img_err:
                     logger.error(f"Error processing slide {idx}: {img_err}")
                     continue
             
             if media and len(media) > 0:
-                try:
-                    await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media)
+                chat_id = update.effective_chat.id
+                if len(media) == 1:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=media[0].media,
+                        caption=media[0].caption,
+                    )
                     await feedback.delete()
                     return
-                except Exception as group_err:
-                    logger.error(f"Failed to send media group: {group_err}")
-                    await feedback.edit_text("[Error] Could not send images. Try downloading as video.")
-                    return
+                # Telegram allows at most 10 photos in one media group.
+                for batch_start in range(0, len(media), 10):
+                    batch = media[batch_start:batch_start + 10]
+                    try:
+                        await context.bot.send_media_group(chat_id=chat_id, media=batch)
+                    except Exception as group_err:
+                        logger.warning(
+                            "Media group failed for TikTok batch %s-%s: %s; trying individual photos",
+                            batch_start + 1, batch_start + len(batch), group_err,
+                        )
+                        for photo in batch:
+                            try:
+                                await context.bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=photo.media,
+                                    caption=photo.caption,
+                                )
+                            except Exception as photo_err:
+                                logger.error("Failed to send TikTok photo %s: %s", batch_start + 1, photo_err)
+                await feedback.delete()
+                return
             else:
                 await feedback.edit_text("[Error] No valid images could be extracted.")
                 return
