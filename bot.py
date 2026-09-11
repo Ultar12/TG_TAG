@@ -1637,6 +1637,13 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                             logger.warning("Skipping inaccessible TikTok gallery image: %s", image_error)
                     if not downloaded_images:
                         raise RuntimeError("TikTok gallery images could not be downloaded")
+                    if len(downloaded_images) == 1:
+                        await context.bot.send_photo(
+                            chat_id=update.effective_chat.id,
+                            photo=downloaded_images[0],
+                            caption=caption if batch_start == 0 else None,
+                        )
+                        continue
                     media = [
                         InputMediaPhoto(media=image_bytes, caption=caption if index == 0 else None)
                         for index, image_bytes in enumerate(downloaded_images)

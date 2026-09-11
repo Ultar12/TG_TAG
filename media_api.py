@@ -785,6 +785,27 @@ def _tikwm_video_id(url: str) -> str | None:
         return None
 
 
+def _tiktok_page_image_urls(url: str) -> list[str]:
+    """Extract gallery CDN URLs from TikTok page JSON when TikWM omits them."""
+    try:
+        response = requests.get(url, headers={"User-Agent": MEDIA_USER_AGENT}, timeout=30)
+        response.raise_for_status()
+        page = (
+            response.text.replace("\\u002F", "/")
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+        )
+        urls: list[str] = []
+        for block in re.findall(r"url_list\s*[:=]\s*\[(.*?)\]", page, flags=re.DOTALL):
+            for value in re.findall(r"https?://[^\"'\\\s]+", block):
+                cleaned = value.rstrip("\\,}")
+                if ("tiktok" in cleaned or "ibytedtos" in cleaned) and cleaned not in urls:
+                    urls.append(cleaned)
+        return urls
+    except (requests.RequestException, UnicodeError):
+        return []
+
+
 def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
     headers = {"User-Agent": MEDIA_USER_AGENT}
     responses = []
@@ -827,6 +848,11 @@ def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
     images = _tikwm_image_urls(data)
     if images:
         return "json", {"type": "images", "urls": images, "caption": caption}
+
+    page_images = _tiktok_page_image_urls(url)
+    if page_images:
+        logger.info("Recovered %s TikTok gallery images from page data", len(page_images))
+        return "json", {"type": "images", "urls": page_images, "caption": caption}
 
     media_url = data.get("hdplay") or data.get("play")
     if not media_url:
