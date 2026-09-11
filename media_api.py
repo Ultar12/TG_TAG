@@ -832,27 +832,41 @@ def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
             logger.warning("TikWM feed endpoint failed: %s", exc)
 
     data: dict[str, Any] = {}
+    best_images: list[str] = []
     for response in responses:
         try:
             response.raise_for_status()
             candidate = (response.json() or {}).get("data") or {}
             if isinstance(candidate, dict):
-                data = candidate
-                if _tikwm_image_urls(candidate):
-                    break
+                candidate_images = _tikwm_image_urls(candidate)
+                if len(candidate_images) > len(best_images):
+                    data = candidate
+                    best_images = candidate_images
         except (requests.RequestException, ValueError, TypeError) as exc:
             logger.warning("Invalid TikWM response: %s", exc)
     if not data:
         return None
     caption = str(data.get("title") or "")
-    images = _tikwm_image_urls(data)
+    images = best_images or _tikwm_image_urls(data)
     if images:
-        return "json", {"type": "images", "urls": images, "caption": caption}
+        return "json", {
+            "type": "images",
+            "count": len(images),
+            "urls": images,
+            "items": [{"url": image, "caption": caption} for image in images],
+            "caption": caption,
+        }
 
     page_images = _tiktok_page_image_urls(url)
     if page_images:
         logger.info("Recovered %s TikTok gallery images from page data", len(page_images))
-        return "json", {"type": "images", "urls": page_images, "caption": caption}
+        return "json", {
+            "type": "images",
+            "count": len(page_images),
+            "urls": page_images,
+            "items": [{"url": image, "caption": caption} for image in page_images],
+            "caption": caption,
+        }
 
     media_url = data.get("hdplay") or data.get("play")
     if not media_url:
