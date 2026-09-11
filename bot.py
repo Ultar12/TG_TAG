@@ -1610,17 +1610,36 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                 await feedback.edit_text("Download failed. No valid images were returned.")
                 return
             if len(valid_urls) == 1:
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=valid_urls[0],
-                    caption=caption,
+                image_response = await asyncio.to_thread(
+                    requests.get,
+                    valid_urls[0],
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+                    timeout=90,
                 )
+                image_response.raise_for_status()
+                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=image_response.content, caption=caption)
             else:
                 for batch_start in range(0, len(valid_urls), 10):
                     batch_urls = valid_urls[batch_start:batch_start + 10]
+                    downloaded_images = []
+                    for image_url in batch_urls:
+                        try:
+                            image_response = await asyncio.to_thread(
+                                requests.get,
+                                image_url,
+                                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+                                timeout=90,
+                            )
+                            image_response.raise_for_status()
+                            if image_response.content:
+                                downloaded_images.append(image_response.content)
+                        except requests.RequestException as image_error:
+                            logger.warning("Skipping inaccessible TikTok gallery image: %s", image_error)
+                    if not downloaded_images:
+                        raise RuntimeError("TikTok gallery images could not be downloaded")
                     media = [
-                        InputMediaPhoto(media=image_url, caption=caption if index == 0 else None)
-                        for index, image_url in enumerate(batch_urls)
+                        InputMediaPhoto(media=image_bytes, caption=caption if index == 0 else None)
+                        for index, image_bytes in enumerate(downloaded_images)
                     ]
                     try:
                         await context.bot.send_media_group(
@@ -1629,10 +1648,10 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                         )
                     except Exception as group_error:
                         logger.warning("Carousel media group failed: %s; sending photos individually", group_error)
-                        for index, image_url in enumerate(batch_urls):
+                        for index, image_bytes in enumerate(downloaded_images):
                             await context.bot.send_photo(
                                 chat_id=update.effective_chat.id,
-                                photo=image_url,
+                                photo=image_bytes,
                                 caption=caption if index == 0 else None,
                             )
             await feedback.delete()

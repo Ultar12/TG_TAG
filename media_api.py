@@ -739,18 +739,93 @@ def _search_youtube_sync(query: str, common_options: Mapping[str, Any]) -> dict[
     }
 
 
+def _tikwm_image_urls(data: Mapping[str, Any]) -> list[str]:
+    """Normalize image fields returned by TikWM API variants."""
+    candidates: list[Any] = []
+    for field in ("images", "slides", "image", "pics"):
+        value = data.get(field)
+        if isinstance(value, list):
+            candidates.extend(value)
+        elif value:
+            candidates.append(value)
+    image_post_info = data.get("image_post_info")
+    if isinstance(image_post_info, Mapping):
+        nested_images = image_post_info.get("images") or image_post_info.get("slides") or []
+        if isinstance(nested_images, list):
+            candidates.extend(nested_images)
+    urls: list[str] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, str):
+            value = item.strip()
+            if value.startswith(("http://", "https://")) and value not in urls:
+                urls.append(value)
+        elif isinstance(item, Mapping):
+            for key in ("url", "download_addr", "src", "url_list", "imageURL", "thumbnail"):
+                if key in item:
+                    collect(item[key])
+        elif isinstance(item, list):
+            for value in item:
+                collect(value)
+
+    for item in candidates:
+        collect(item)
+    return urls
+
+
+def _tikwm_video_id(url: str) -> str | None:
+    match = re.search(r"/(?:video|photo)/(\d+)", url)
+    if match:
+        return match.group(1)
+    try:
+        response = requests.get(url, allow_redirects=True, timeout=10, headers={"User-Agent": MEDIA_USER_AGENT})
+        match = re.search(r"/(?:video|photo)/(\d+)", response.url)
+        return match.group(1) if match else None
+    except requests.RequestException:
+        return None
+
+
 def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
-    response = requests.get(
-        "https://www.tikwm.com/api/",
-        params={"url": url, "hd": "1"},
-        headers={"User-Agent": MEDIA_USER_AGENT},
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = (response.json() or {}).get("data") or {}
+    headers = {"User-Agent": MEDIA_USER_AGENT}
+    responses = []
+    try:
+        responses.append(requests.get(
+            "https://www.tikwm.com/api/",
+            params={"url": url, "hd": "1"},
+            headers=headers,
+            timeout=30,
+        ))
+    except requests.RequestException as exc:
+        logger.warning("TikWM primary endpoint failed: %s", exc)
+
+    video_id = _tikwm_video_id(url)
+    if video_id:
+        try:
+            responses.append(requests.get(
+                "https://www.tikwm.com/api/feed/video",
+                params={"video_id": video_id},
+                headers=headers,
+                timeout=30,
+            ))
+        except requests.RequestException as exc:
+            logger.warning("TikWM feed endpoint failed: %s", exc)
+
+    data: dict[str, Any] = {}
+    for response in responses:
+        try:
+            response.raise_for_status()
+            candidate = (response.json() or {}).get("data") or {}
+            if isinstance(candidate, dict):
+                data = candidate
+                if _tikwm_image_urls(candidate):
+                    break
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.warning("Invalid TikWM response: %s", exc)
+    if not data:
+        return None
     caption = str(data.get("title") or "")
-    images = data.get("images") or []
-    if isinstance(images, list) and images:
+    images = _tikwm_image_urls(data)
+    if images:
         return "json", {"type": "images", "urls": images, "caption": caption}
 
     media_url = data.get("hdplay") or data.get("play")
