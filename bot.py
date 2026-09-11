@@ -1603,11 +1603,38 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                 await feedback.edit_text("Download failed. No media was found.")
                 return
             caption = str(data.get("caption") or "").strip() or None
-            await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=urls[0],
-                caption=caption,
-            )
+            # Telegram permits 2–10 photos per media group. Send every URL
+            # returned by the API instead of silently discarding urls[1:].
+            valid_urls = [item for item in urls if isinstance(item, str) and item.strip()]
+            if not valid_urls:
+                await feedback.edit_text("Download failed. No valid images were returned.")
+                return
+            if len(valid_urls) == 1:
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=valid_urls[0],
+                    caption=caption,
+                )
+            else:
+                for batch_start in range(0, len(valid_urls), 10):
+                    batch_urls = valid_urls[batch_start:batch_start + 10]
+                    media = [
+                        InputMediaPhoto(media=image_url, caption=caption if index == 0 else None)
+                        for index, image_url in enumerate(batch_urls)
+                    ]
+                    try:
+                        await context.bot.send_media_group(
+                            chat_id=update.effective_chat.id,
+                            media=media,
+                        )
+                    except Exception as group_error:
+                        logger.warning("Carousel media group failed: %s; sending photos individually", group_error)
+                        for index, image_url in enumerate(batch_urls):
+                            await context.bot.send_photo(
+                                chat_id=update.effective_chat.id,
+                                photo=image_url,
+                                caption=caption if index == 0 else None,
+                            )
             await feedback.delete()
             return
 
