@@ -550,7 +550,8 @@ def _download_video_file_sync(
     common_options: Mapping[str, Any],
     require_audio: bool = True,
     max_height: int = 1080,
-) -> tuple[str, str]:
+    return_info: bool = False,
+) -> tuple[str, str] | tuple[str, str, dict[str, Any]]:
     directory = tempfile.mkdtemp(prefix="tg_tag_api_video_")
     try:
         raw_path = os.path.join(directory, "raw.media")
@@ -577,10 +578,12 @@ def _download_video_file_sync(
             }
         )
         with yt_dlp.YoutubeDL(options) as downloader:
-            downloader.download([source_url])
+            info = downloader.extract_info(source_url, download=True)
         _copy_valid_download(directory, raw_path, require_audio=require_audio)
         if os.path.getsize(raw_path) > MAX_API_FILE_BYTES:
             raise MediaAPIError("The downloaded video is larger than the supported 2 GB limit.")
+        if return_info:
+            return raw_path, directory, info if isinstance(info, dict) else {}
         return raw_path, directory
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
@@ -984,14 +987,18 @@ class DownloadHandler(_BaseHandler):
                         "tiktok": {"app_name": ["tiktok_web"]},
                     },
                 })
-                video_path, temp_dir = await asyncio.to_thread(
+                video_path, temp_dir, info = await asyncio.to_thread(
                     _download_video_file_sync,
                     url,
                     tiktok_options,
                     False,
                     _normalize_quality_height(requested_quality),
+                    True,
                 )
                 try:
+                    caption = str((info or {}).get("description") or (info or {}).get("title") or "").strip()
+                    if caption:
+                        self.set_header("X-Media-Caption", quote(caption, safe=""))
                     await self._stream_file(video_path, "tiktok-video.mp4", "video/mp4")
                 finally:
                     shutil.rmtree(temp_dir, ignore_errors=True)
