@@ -970,6 +970,33 @@ class DownloadHandler(_BaseHandler):
                     self._write_media(content, "tiktok-video.mp4", "video/mp4")
                     return
 
+                # TikTok video posts: use yt-dlp directly when TikWM does not
+                # return a playable file. Gallery posts are returned above as
+                # JSON and never reach this branch.
+                tiktok_options = dict(self.common_options)
+                tiktok_options.update({
+                    "http_headers": {
+                        "User-Agent": MEDIA_USER_AGENT,
+                        "Referer": "https://www.tiktok.com/",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                    "extractor_args": {
+                        "tiktok": {"app_name": ["tiktok_web"]},
+                    },
+                })
+                video_path, temp_dir = await asyncio.to_thread(
+                    _download_video_file_sync,
+                    url,
+                    tiktok_options,
+                    False,
+                    _normalize_quality_height(requested_quality),
+                )
+                try:
+                    await self._stream_file(video_path, "tiktok-video.mp4", "video/mp4")
+                finally:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
             if not requested_quality:
                 requested_quality = self.get_query_argument("quality", default="")
             video_path, temp_dir = await asyncio.to_thread(
