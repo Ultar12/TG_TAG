@@ -148,6 +148,74 @@ async def has_audio_stream(file_path: str) -> bool:
         logger.error("ffprobe is not installed; cannot verify audio streams.")
         return False
 
+
+async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Extract representative frames from a Telegram video and send them as photos."""
+    message = update.message
+    if not message or not message.video:
+        return
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"frames_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    feedback = await message.reply_text("Extracting good moments from your video...")
+    video_path = os.path.join(temp_dir, "source.mp4")
+    try:
+        telegram_file = await message.video.get_file()
+        await telegram_file.download_to_drive(video_path)
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await probe.communicate()
+        try:
+            duration = float(stdout.decode().strip())
+        except (ValueError, AttributeError):
+            duration = 0
+        if duration <= 0:
+            raise RuntimeError("Could not read video duration")
+
+        # Six evenly spaced frames, avoiding the often-black first/last frame.
+        frame_count = min(6, max(2, int(duration // 2) + 1))
+        timestamps = [duration * (index + 1) / (frame_count + 1) for index in range(frame_count)]
+        frame_paths = []
+        for index, timestamp in enumerate(timestamps, start=1):
+            frame_path = os.path.join(temp_dir, f"frame-{index}.jpg")
+            extract = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                "-ss", f"{timestamp:.3f}", "-i", video_path, "-frames:v", "1",
+                "-vf", "scale='min(1600,iw)':-2", "-q:v", "2", frame_path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await extract.communicate()
+            if extract.returncode == 0 and os.path.isfile(frame_path) and os.path.getsize(frame_path) > 0:
+                frame_paths.append(frame_path)
+            else:
+                logger.warning("Could not extract frame %s: %s", index, stderr.decode(errors="replace")[-300:])
+        if not frame_paths:
+            raise RuntimeError("No usable frames were extracted")
+
+        if len(frame_paths) == 1:
+            with open(frame_paths[0], "rb") as photo:
+                await context.bot.send_photo(chat_id=message.chat_id, photo=photo, caption="Snapshots from your video")
+        else:
+            media = []
+            files = []
+            try:
+                for index, frame_path in enumerate(frame_paths):
+                    handle = open(frame_path, "rb")
+                    files.append(handle)
+                    media.append(InputMediaPhoto(media=handle, caption="Snapshots from your video" if index == 0 else None))
+                await context.bot.send_media_group(chat_id=message.chat_id, media=media)
+            finally:
+                for handle in files:
+                    handle.close()
+        await feedback.delete()
+    except Exception as exc:
+        logger.exception("Video-to-photos failed: %s", exc)
+        await feedback.edit_text("I could not extract photos from that video. Please try a different video.")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 Base = declarative_base()
@@ -2433,6 +2501,7 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handlers(cmd_handlers)
     application.add_handlers(msg_handlers)
     application.add_handlers(callback_handlers)
+    application.add_handler(MessageHandler(filters.VIDEO, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
     
     port = int(os.environ.get("PORT", "10000"))
