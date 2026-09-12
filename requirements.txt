@@ -19,7 +19,6 @@ PrettyTable==3.18.0
 
 # AI and API services
 openai==2.52.0
-anthropic==0.75.0
 gTTS==2.5.4
 requests==2.34.2
 beautifulsoup4==4.15.0
