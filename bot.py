@@ -73,7 +73,7 @@ AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
 AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
 AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
 ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
-ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://co.agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 
 # --- Initial Checks ---
@@ -985,9 +985,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     feedback = await update.message.reply_text("Thinking with AgentRouter...")
     try:
         if ANTHROPIC_AUTH_TOKEN:
+            anthropic_base_url = ANTHROPIC_BASE_URL.rstrip('/')
+            # agentrouter.org is the web/WAF host; the documented API host is
+            # co.agentrouter.org. Normalize the old value automatically.
+            if anthropic_base_url == "https://agentrouter.org":
+                anthropic_base_url = "https://co.agentrouter.org"
             response = await asyncio.to_thread(
                 requests.post,
-                f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
+                f"{anthropic_base_url}/v1/messages",
                 headers={
                     "x-api-key": ANTHROPIC_AUTH_TOKEN,
                     "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",

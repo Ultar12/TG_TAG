@@ -89,7 +89,7 @@
     },
     "ANTHROPIC_BASE_URL": {
       "description": "Anthropic-compatible AgentRouter base URL.",
-      "value": "https://agentrouter.org",
+      "value": "https://co.agentrouter.org",
       "required": false
     },
     "ANTHROPIC_MODEL": {
