@@ -155,7 +155,10 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not message:
         return
     media = message.video
-    if not media and message.document and (message.document.mime_type or "").startswith("video/"):
+    if not media and message.document and (
+        (message.document.mime_type or "").startswith("video/")
+        or (message.document.file_name or "").lower().endswith((".mp4", ".mov", ".mkv", ".webm", ".avi"))
+    ):
         media = message.document
     if not media and message.animation:
         media = message.animation
@@ -166,10 +169,13 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     feedback = await message.reply_text("Extracting good moments from your video...")
     video_path = os.path.join(temp_dir, "source.mp4")
     try:
-        telegram_file = await media.get_file()
-        await telegram_file.download_to_drive(video_path)
+        telegram_file = await context.bot.get_file(media.file_id)
+        downloaded_path = await telegram_file.download_to_drive(video_path)
+        if downloaded_path and os.path.isfile(str(downloaded_path)):
+            video_path = str(downloaded_path)
         probe = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "format=duration:stream=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", video_path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
@@ -177,7 +183,7 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             duration = float(stdout.decode().strip())
         except (ValueError, AttributeError):
-            duration = 0
+            duration = float(getattr(media, "duration", 0) or 0)
         if duration <= 0:
             raise RuntimeError("Could not read video duration")
 
@@ -190,8 +196,8 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             frame_path = os.path.join(temp_dir, f"frame-{index}.jpg")
             extract = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                "-ss", f"{timestamp:.3f}", "-i", video_path, "-frames:v", "1",
-                "-q:v", "1", frame_path,
+                "-ss", f"{timestamp:.3f}", "-i", video_path,
+                "-map", "0:v:0", "-frames:v", "1", "-an", "-q:v", "1", frame_path,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await extract.communicate()
@@ -202,27 +208,13 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not frame_paths:
             raise RuntimeError("No usable frames were extracted")
 
-        if len(frame_paths) == 1:
-            with open(frame_paths[0], "rb") as photo:
-                await context.bot.send_photo(chat_id=message.chat_id, photo=photo, caption="Snapshots from your video")
-        else:
-            # Telegram allows at most 10 photos per media group.
-            for batch_start in range(0, len(frame_paths), 10):
-                batch_paths = frame_paths[batch_start:batch_start + 10]
-                media = []
-                files = []
-                try:
-                    for index, frame_path in enumerate(batch_paths):
-                        handle = open(frame_path, "rb")
-                        files.append(handle)
-                        media.append(InputMediaPhoto(
-                            media=handle,
-                            caption="Snapshots from your video" if batch_start == 0 and index == 0 else None,
-                        ))
-                    await context.bot.send_media_group(chat_id=message.chat_id, media=media)
-                finally:
-                    for handle in files:
-                        handle.close()
+        for index, frame_path in enumerate(frame_paths):
+            with open(frame_path, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=message.chat_id,
+                    photo=photo,
+                    caption="Snapshots from your video" if index == 0 else None,
+                )
         await feedback.delete()
     except Exception as exc:
         logger.exception("Video-to-photos failed: %s", exc)
