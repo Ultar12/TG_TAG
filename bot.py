@@ -1120,6 +1120,16 @@ async def cloned_voice_text_command(update: Update, context: ContextTypes.DEFAUL
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate a voice note from the saved clone; ElevenLabs detects supported languages automatically."""
+    text = " ".join(context.args).strip()
+    if not text and update.message.reply_to_message and update.message.reply_to_message.text:
+        text = update.message.reply_to_message.text.strip()
+    if not text:
+        await update.message.reply_text("Usage: /voice <text> — or reply to a text message with /voice")
+        return
+    await cloned_voice_text_command(update, context, text)
+
 # --- NEW: Corrected and Improved TikTok Search Functions ---
 
 async def tiktok_search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2718,7 +2728,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("novel", novel_command), CommandHandler("riddle", get_riddle), 
         CommandHandler("gmail", gmail_command), CommandHandler("screenshot", screenshot_command),
         CommandHandler("movie", movie_command), CommandHandler("tts", tts_command),
-        CommandHandler("clonevoice", clone_voice_command),
+        CommandHandler("clonevoice", clone_voice_command), CommandHandler("voice", voice_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
