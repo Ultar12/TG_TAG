@@ -97,6 +97,11 @@
       "value": "claude-opus-5",
       "required": false
     },
+    "TERMUX_WS_URL": {
+      "description": "WebSocket URL of the Termux AI worker used by /ai.",
+      "value": "wss://scr-tls-26dea6-d35aec677ebb.herokuapp.com/",
+      "required": false
+    },
     "GMAIL_ADDRESS": {
       "description": "Optional Gmail address for the admin email feature.",
       "required": false

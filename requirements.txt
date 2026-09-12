@@ -21,6 +21,7 @@ PrettyTable==3.18.0
 openai==2.52.0
 gTTS==2.5.4
 requests==2.34.2
+websocket-client==1.8.0
 beautifulsoup4==4.15.0
 google-cloud-texttospeech==2.37.0
 

@@ -10,6 +10,10 @@ import shutil
 import time
 import requests
 import json
+try:
+    import websocket
+except ImportError:
+    websocket = None
 from bs4 import BeautifulSoup
 import base64
 import openai # For DALL-E image creation
@@ -75,6 +79,7 @@ AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
 ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
+TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://scr-tls-26dea6-d35aec677ebb.herokuapp.com/")
 
 # --- Initial Checks ---
 missing_required = [
@@ -968,7 +973,7 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
-    if not agentrouter_client and not ANTHROPIC_AUTH_TOKEN:
+    if not websocket and not agentrouter_client and not ANTHROPIC_AUTH_TOKEN and not AGENTROUTER_API_KEY:
         await update.message.reply_text(
             "AgentRouter is not configured. Add AGENTROUTER_API_KEY or ANTHROPIC_AUTH_TOKEN and restart TG_TAG."
         )
@@ -984,7 +989,9 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     feedback = await update.message.reply_text("Thinking with AgentRouter...")
     try:
-        if ANTHROPIC_AUTH_TOKEN:
+        if websocket and TERMUX_WS_URL and (ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY):
+            answer = await asyncio.to_thread(_ask_termux_ai_sync, prompt)
+        elif ANTHROPIC_AUTH_TOKEN:
             response = await asyncio.to_thread(
                 requests.post,
                 f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
@@ -1049,6 +1056,42 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as exc:
         logger.exception("AgentRouter /ai failed: %s", exc)
         await feedback.edit_text(f"AgentRouter test failed: {str(exc)[:700]}")
+
+def _ask_termux_ai_sync(prompt: str) -> str:
+    """Send one AI request through the user's working Termux WebSocket worker."""
+    if not websocket:
+        raise RuntimeError("The websocket-client package is not installed.")
+    request_id = uuid.uuid4().hex
+    ws = None
+    try:
+        ws = websocket.create_connection(TERMUX_WS_URL, timeout=330, origin=None)
+        ws.send(json.dumps({
+            "action": "ai_prompt",
+            "reqId": request_id,
+            "prompt": prompt,
+            "apiKey": ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY,
+        }))
+        deadline = time.time() + 320
+        while time.time() < deadline:
+            raw = ws.recv()
+            if not raw:
+                continue
+            message = json.loads(raw)
+            if message.get("action") == "ping":
+                ws.send(json.dumps({"action": "ping"}))
+                continue
+            if message.get("action") != "ai_response" or message.get("reqId") != request_id:
+                continue
+            if not message.get("success"):
+                raise RuntimeError(message.get("error") or "The Termux AI worker rejected the request.")
+            answer = (message.get("text") or "").strip()
+            if not answer:
+                raise RuntimeError("The Termux AI worker returned an empty response.")
+            return answer
+        raise TimeoutError("The Termux AI worker did not respond within 320 seconds.")
+    finally:
+        if ws:
+            ws.close()
 
 def _elevenlabs_headers() -> dict:
     if not ELEVENLABS_API_KEY:
