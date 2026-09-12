@@ -190,7 +190,7 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             extract = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                 "-ss", f"{timestamp:.3f}", "-i", video_path, "-frames:v", "1",
-                "-vf", "scale='min(1600,iw)':-2", "-q:v", "2", frame_path,
+                "-vf", "scale=1600:-2:force_original_aspect_ratio=decrease", "-q:v", "2", frame_path,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await extract.communicate()
