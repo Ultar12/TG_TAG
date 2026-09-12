@@ -60,6 +60,15 @@
       "description": "Optional TMDB API key.",
       "required": false
     },
+    "ELEVENLABS_API_KEY": {
+      "description": "ElevenLabs API key for consent-based voice cloning and high-quality voice notes.",
+      "required": false
+    },
+    "ELEVENLABS_TTS_MODEL": {
+      "description": "Optional ElevenLabs TTS model. Defaults to eleven_multilingual_v2.",
+      "value": "eleven_multilingual_v2",
+      "required": false
+    },
     "GMAIL_ADDRESS": {
       "description": "Optional Gmail address for the admin email feature.",
       "required": false

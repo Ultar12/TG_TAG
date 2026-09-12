@@ -67,6 +67,8 @@ STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 SCREENSHOT_API_KEY = os.environ.get("SCREENSHOT_API_KEY")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
 
 # --- Initial Checks ---
 missing_required = [
@@ -99,6 +101,8 @@ except Exception as e: openai_client = None; logger.error(f"Failed to configure 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+VOICE_SAMPLE_MAX_SECONDS = 120
+VOICE_TEXT_MAX_CHARS = 2500
 # Prefer the configured path, then use the repository's supported cookie file.
 configured_cookie_file = os.environ.get("YTDL_COOKIES_FILE")
 cookie_candidates = [configured_cookie_file, "cookies_youtube.txt"]
@@ -233,6 +237,15 @@ class User(Base):
     username = Column(String, nullable=True)
     chat_id = Column(BigInteger, primary_key=True, nullable=False)
 
+class VoiceProfile(Base):
+    __tablename__ = 'voice_profiles'
+    user_id = Column(BigInteger, primary_key=True, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    voice_id = Column(String, nullable=False)
+    consent_confirmed = Column(String, nullable=False, default='yes')
+    created_at = Column(String, nullable=False, default=lambda: datetime.datetime.utcnow().isoformat())
+    updated_at = Column(String, nullable=False, default=lambda: datetime.datetime.utcnow().isoformat())
+
 engine_options = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False}
@@ -318,6 +331,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/ytsearch <query>**: Search for YouTube videos.\n"
         "**/play <song name>**: Search and download a song or video.\n"
         "**/tts <text>**: Convert text to speech.\n"
+        "**/clonevoice**: Create a consent-based voice profile from a voice message or video, then generate voice notes from text.\n"
         "**/session**: Generate a Telethon session string (admin only, private chat).\n"
         "**/connect +<number>**: Connect to a WhatsApp account using a pairing code."
     )
@@ -931,6 +945,180 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
     finally:
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
+
+def _elevenlabs_headers() -> dict:
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY is not configured.")
+    return {"xi-api-key": ELEVENLABS_API_KEY, "Accept": "application/json"}
+
+def _clone_voice_sync(sample_path: str, voice_name: str) -> str:
+    with open(sample_path, "rb") as sample:
+        response = requests.post(
+            "https://api.elevenlabs.io/v1/voices/add",
+            headers=_elevenlabs_headers(),
+            data={
+                "name": voice_name,
+                "description": "User-provided voice sample with consent",
+                "remove_background_noise": "true",
+                "labels": json.dumps({"source": "telegram", "consent": "confirmed"}),
+            },
+            files={"files": (os.path.basename(sample_path), sample, "audio/mpeg")},
+            timeout=180,
+        )
+    if not response.ok:
+        raise RuntimeError(f"Voice cloning failed ({response.status_code}): {response.text[:300]}")
+    voice_id = response.json().get("voice_id")
+    if not voice_id:
+        raise RuntimeError("Voice cloning service returned no voice ID.")
+    return voice_id
+
+def _synthesize_voice_sync(voice_id: str, text: str, output_path: str) -> None:
+    response = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128",
+        headers={**_elevenlabs_headers(), "Content-Type": "application/json"},
+        json={
+            "text": text,
+            "model_id": ELEVENLABS_TTS_MODEL,
+            "voice_settings": {"stability": 0.48, "similarity_boost": 0.86, "style": 0.18, "use_speaker_boost": True},
+        },
+        timeout=180,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Voice generation failed ({response.status_code}): {response.text[:300]}")
+    with open(output_path, "wb") as output:
+        output.write(response.content)
+
+async def clone_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not ELEVENLABS_API_KEY:
+        await update.message.reply_text("Voice cloning is not configured yet. Add ELEVENLABS_API_KEY to the bot environment.")
+        return
+    context.user_data['state'] = 'awaiting_voice_sample'
+    await update.message.reply_text(
+        "Send a clear voice message or a video containing the speaker's voice.\n\n"
+        "For accurate results, use 30–120 seconds of one speaker with little music or background noise.\n\n"
+        "Only clone a voice when you have the speaker's permission. I will ask you to confirm consent before creating the voice profile."
+    )
+
+async def handle_voice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if not message or context.user_data.get('state') != 'awaiting_voice_sample':
+        return
+    media = message.voice or message.audio or message.video or message.document
+    if not media:
+        return
+    if message.document and not ((message.document.mime_type or '').startswith(('audio/', 'video/'))):
+        return
+    context.user_data.pop('state', None)
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"voice_clone_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    feedback = await message.reply_text("I received the sample. Checking the audio quality...")
+    try:
+        source_path = os.path.join(temp_dir, "source.bin")
+        telegram_file = await context.bot.get_file(media.file_id)
+        await telegram_file.download_to_drive(source_path)
+        sample_path = os.path.join(temp_dir, "sample.mp3")
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", source_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await probe.communicate()
+        duration = float(stdout.decode().strip() or "0")
+        if duration < 10:
+            raise RuntimeError("Please send at least 10 seconds of clear speech.")
+        if duration > VOICE_SAMPLE_MAX_SECONDS:
+            raise RuntimeError("Please keep the sample at 120 seconds or less.")
+        convert = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", source_path,
+            "-vn", "-ac", "1", "-ar", "44100", "-codec:a", "libmp3lame", "-b:a", "192k", sample_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await convert.communicate()
+        if convert.returncode != 0:
+            raise RuntimeError(f"Could not extract audio: {stderr.decode(errors='replace')[-200:]}")
+        context.user_data['pending_voice_sample_path'] = sample_path
+        keyboard = [[
+            InlineKeyboardButton("I have permission — continue", callback_data="voice_consent:yes"),
+            InlineKeyboardButton("Cancel", callback_data="voice_consent:no"),
+        ]]
+        await feedback.edit_text(
+            "The sample is ready. Confirm that you have the speaker's permission to clone this voice.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as exc:
+        logger.exception("Voice sample preparation failed: %s", exc)
+        context.user_data.pop('pending_voice_sample_path', None)
+        await feedback.edit_text(str(exc))
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+async def handle_voice_consent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not query.data.endswith(':yes'):
+        context.user_data.pop('pending_voice_sample_path', None)
+        await query.edit_message_text("Voice cloning cancelled.")
+        return
+    sample_path = context.user_data.pop('pending_voice_sample_path', None)
+    if not sample_path or not os.path.isfile(sample_path):
+        await query.edit_message_text("That sample has expired. Please use /clonevoice and send it again.")
+        return
+    await query.edit_message_text("Creating the voice profile with high-quality voice cloning...")
+    try:
+        voice_id = await asyncio.to_thread(_clone_voice_sync, sample_path, f"Telegram voice {query.from_user.id}")
+        session = Session()
+        try:
+            profile = session.query(VoiceProfile).filter_by(user_id=query.from_user.id).first()
+            now = datetime.datetime.utcnow().isoformat()
+            if profile:
+                profile.voice_id = voice_id
+                profile.chat_id = query.message.chat_id
+                profile.updated_at = now
+            else:
+                session.add(VoiceProfile(user_id=query.from_user.id, chat_id=query.message.chat_id, voice_id=voice_id, updated_at=now))
+            session.commit()
+        finally:
+            session.close()
+        context.user_data['state'] = 'awaiting_cloned_voice_text'
+        await context.bot.send_message(query.message.chat_id, "Voice profile created. Now send the text you want spoken.")
+    except Exception as exc:
+        logger.exception("Voice cloning failed: %s", exc)
+        await context.bot.send_message(query.message.chat_id, "I could not create the voice profile. Please try a cleaner sample.")
+    finally:
+        shutil.rmtree(os.path.dirname(sample_path), ignore_errors=True)
+
+async def cloned_voice_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    if len(text) > VOICE_TEXT_MAX_CHARS:
+        await update.message.reply_text(f"Please keep the text under {VOICE_TEXT_MAX_CHARS} characters.")
+        return
+    session = Session()
+    try:
+        profile = session.query(VoiceProfile).filter_by(user_id=update.effective_user.id).first()
+        voice_id = profile.voice_id if profile else None
+    finally:
+        session.close()
+    if not voice_id:
+        context.user_data.pop('state', None)
+        await update.message.reply_text("No voice profile found. Use /clonevoice first.")
+        return
+    context.user_data.pop('state', None)
+    feedback = await update.message.reply_text("Generating the voice note...")
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"voice_tts_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    mp3_path = os.path.join(temp_dir, "speech.mp3")
+    ogg_path = os.path.join(temp_dir, "speech.ogg")
+    try:
+        await asyncio.to_thread(_synthesize_voice_sync, voice_id, text, mp3_path)
+        convert = await asyncio.create_subprocess_exec("ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", mp3_path, "-c:a", "libopus", "-b:a", "64k", ogg_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await convert.communicate()
+        if convert.returncode != 0:
+            raise RuntimeError(stderr.decode(errors='replace')[-300:])
+        with open(ogg_path, 'rb') as voice_note:
+            await context.bot.send_voice(chat_id=update.effective_chat.id, voice=voice_note, caption="Generated with your saved voice")
+        await feedback.delete()
+    except Exception as exc:
+        logger.exception("Cloned voice generation failed: %s", exc)
+        await feedback.edit_text("Voice generation failed. Please try again with shorter text.")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 # --- NEW: Corrected and Improved TikTok Search Functions ---
 
@@ -2484,6 +2672,8 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Failed to send email: {e}")
             await feedback.edit_text("Failed to send email.")
+    elif popped_state == 'awaiting_cloned_voice_text':
+        await cloned_voice_text_command(update, context, text)
     else:
         state_handlers = {
             'awaiting_create_prompt': lambda: create_image_command(update, context, prompt=text),
@@ -2528,6 +2718,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("novel", novel_command), CommandHandler("riddle", get_riddle), 
         CommandHandler("gmail", gmail_command), CommandHandler("screenshot", screenshot_command),
         CommandHandler("movie", movie_command), CommandHandler("tts", tts_command),
+        CommandHandler("clonevoice", clone_voice_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
@@ -2564,6 +2755,8 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handlers(cmd_handlers)
     application.add_handlers(msg_handlers)
     application.add_handlers(callback_handlers)
+    application.add_handler(CallbackQueryHandler(handle_voice_consent, pattern="^voice_consent:"))
+    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice_sample))
     application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION | filters.Document.ALL, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
     
