@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -896,7 +897,7 @@ def _extract_video_photos_sync(
         source_url,
         common_options,
         require_audio=False,
-        max_height=1080,
+        max_height=2160,
     )
     try:
         probe = subprocess.run(
@@ -972,18 +973,37 @@ class _BaseHandler(tornado.web.RequestHandler):
 
 class VideoPhotosHandler(_BaseHandler):
     async def get(self) -> None:
-        await self._handle(self.get_query_argument("url", default=""))
+        await self._handle(
+            self.get_query_argument("url", default=""),
+            self.get_query_argument("format", default="zip"),
+        )
 
     async def post(self) -> None:
         body = self._json_body()
-        await self._handle(body.get("url") or self.get_body_argument("url", default=""))
+        await self._handle(
+            body.get("url") or self.get_body_argument("url", default=""),
+            body.get("format") or self.get_body_argument("format", default="zip"),
+        )
 
-    async def _handle(self, raw_url: Any) -> None:
+    async def _handle(self, raw_url: Any, response_format: Any = "zip") -> None:
         try:
             url = _safe_url(raw_url)
             archive = await asyncio.to_thread(
                 _extract_video_photos_sync, url, self.common_options
             )
+            if str(response_format).lower() == "json":
+                with zipfile.ZipFile(BytesIO(archive)) as source:
+                    images = [
+                        {
+                            "filename": name,
+                            "data": base64.b64encode(source.read(name)).decode("ascii"),
+                        }
+                        for name in source.namelist()
+                        if name.lower().endswith(".jpg")
+                    ]
+                self.set_header("Content-Type", "application/json")
+                self.write({"type": "images", "count": len(images), "images": images})
+                return
             self._write_media(archive, "video-snapshots.zip", "application/zip")
         except tornado.web.HTTPError:
             raise
