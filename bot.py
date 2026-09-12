@@ -989,6 +989,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 requests.post,
                 f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
                 headers={
+                    "x-api-key": ANTHROPIC_AUTH_TOKEN,
                     "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",
                     "anthropic-version": "2023-06-01",
                     "Content-Type": "application/json",
@@ -1002,9 +1003,17 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 },
                 timeout=120,
             )
+            raw_response = response.text.strip()
             if not response.ok:
-                raise RuntimeError(f"Anthropic gateway error ({response.status_code}): {response.text[:500]}")
-            payload = response.json()
+                raise RuntimeError(f"Anthropic gateway error ({response.status_code}): {raw_response[:700]}")
+            try:
+                payload = response.json()
+            except ValueError:
+                content_type = response.headers.get("content-type", "unknown")
+                raise RuntimeError(
+                    f"AgentRouter returned non-JSON data (HTTP {response.status_code}, "
+                    f"content-type {content_type}): {raw_response[:700]}"
+                )
             answer = "".join(item.get("text", "") for item in payload.get("content", []) if item.get("type") == "text")
         else:
             response = await agentrouter_client.chat.completions.create(
