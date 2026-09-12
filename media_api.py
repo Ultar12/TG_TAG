@@ -891,7 +891,7 @@ def _extract_video_photos_sync(
     source_url: str,
     common_options: Mapping[str, Any],
 ) -> bytes:
-    """Download a video URL and return up to six representative JPGs as a ZIP."""
+    """Download a video URL and return up to twelve sharp representative JPGs as a ZIP."""
     video_path, temp_dir = _download_video_file_sync(
         source_url,
         common_options,
@@ -912,7 +912,7 @@ def _extract_video_photos_sync(
         if duration <= 0:
             raise MediaAPIError("Could not read the video duration.")
 
-        frame_count = min(6, max(2, int(duration // 2) + 1))
+        frame_count = min(12, max(3, int(duration // 1) + 1))
         archive = BytesIO()
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
             written = 0
@@ -923,9 +923,7 @@ def _extract_video_photos_sync(
                     [
                         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                         "-ss", f"{timestamp:.3f}", "-i", video_path,
-                        "-frames:v", "1", "-vf",
-                        "scale=1600:-2:force_original_aspect_ratio=decrease",
-                        "-q:v", "2", frame_path,
+                        "-frames:v", "1", "-q:v", "1", frame_path,
                     ], capture_output=True, text=True, timeout=90, check=False,
                 )
                 if result.returncode == 0 and os.path.isfile(frame_path):

@@ -181,8 +181,8 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if duration <= 0:
             raise RuntimeError("Could not read video duration")
 
-        # Six evenly spaced frames, avoiding the often-black first/last frame.
-        frame_count = min(6, max(2, int(duration // 2) + 1))
+        # Up to twelve evenly spaced frames, avoiding the often-black first/last frame.
+        frame_count = min(12, max(3, int(duration // 1) + 1))
         timestamps = [duration * (index + 1) / (frame_count + 1) for index in range(frame_count)]
         frame_paths = []
         for index, timestamp in enumerate(timestamps, start=1):
@@ -190,7 +190,7 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             extract = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                 "-ss", f"{timestamp:.3f}", "-i", video_path, "-frames:v", "1",
-                "-vf", "scale=1600:-2:force_original_aspect_ratio=decrease", "-q:v", "2", frame_path,
+                "-q:v", "1", frame_path,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await extract.communicate()
@@ -205,17 +205,23 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             with open(frame_paths[0], "rb") as photo:
                 await context.bot.send_photo(chat_id=message.chat_id, photo=photo, caption="Snapshots from your video")
         else:
-            media = []
-            files = []
-            try:
-                for index, frame_path in enumerate(frame_paths):
-                    handle = open(frame_path, "rb")
-                    files.append(handle)
-                    media.append(InputMediaPhoto(media=handle, caption="Snapshots from your video" if index == 0 else None))
-                await context.bot.send_media_group(chat_id=message.chat_id, media=media)
-            finally:
-                for handle in files:
-                    handle.close()
+            # Telegram allows at most 10 photos per media group.
+            for batch_start in range(0, len(frame_paths), 10):
+                batch_paths = frame_paths[batch_start:batch_start + 10]
+                media = []
+                files = []
+                try:
+                    for index, frame_path in enumerate(batch_paths):
+                        handle = open(frame_path, "rb")
+                        files.append(handle)
+                        media.append(InputMediaPhoto(
+                            media=handle,
+                            caption="Snapshots from your video" if batch_start == 0 and index == 0 else None,
+                        ))
+                    await context.bot.send_media_group(chat_id=message.chat_id, media=media)
+                finally:
+                    for handle in files:
+                        handle.close()
         await feedback.delete()
     except Exception as exc:
         logger.exception("Video-to-photos failed: %s", exc)
