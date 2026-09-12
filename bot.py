@@ -1087,7 +1087,13 @@ async def handle_voice_consent(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(query.message.chat_id, "Voice profile created. Now send the text you want spoken.")
     except Exception as exc:
         logger.exception("Voice cloning failed: %s", exc)
-        await context.bot.send_message(query.message.chat_id, "I could not create the voice profile. Please try a cleaner sample.")
+        detail = str(exc).replace("ELEVENLABS_API_KEY", "ElevenLabs API key")[:500]
+        await context.bot.send_message(
+            query.message.chat_id,
+            "I could not create the voice profile.\n\n"+
+            f"Reason: {detail}\n\n"+
+            "Try a clear 30–60 second sample with one speaker, no music, and little background noise."
+        )
     finally:
         shutil.rmtree(os.path.dirname(sample_path), ignore_errors=True)
 
