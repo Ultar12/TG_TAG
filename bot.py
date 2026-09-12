@@ -618,6 +618,10 @@ async def edit_photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         telegram_file = await context.bot.get_file(replied.photo[-1].file_id)
         image_bytes = await telegram_file.download_as_bytearray()
+        normalized_image = io.BytesIO()
+        with Image.open(io.BytesIO(bytes(image_bytes))) as source_image:
+            source_image.convert("RGB").save(normalized_image, format="JPEG", quality=95)
+        normalized_image.seek(0)
         prompt = (
             "Edit the provided photograph realistically. Change only what the user requests. "
             "Preserve identity, facial features, pose, proportions, camera angle, lighting, perspective, "
@@ -627,7 +631,7 @@ async def edit_photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         result = await openai_client.images.edit(
             model=os.environ.get("IMAGE_EDIT_MODEL", "gpt-image-1"),
-            image=io.BytesIO(bytes(image_bytes)),
+            image=("photo.jpg", normalized_image, "image/jpeg"),
             prompt=prompt,
             size="auto",
             quality="low",
