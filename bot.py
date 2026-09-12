@@ -77,7 +77,7 @@ AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
 AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
 AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
 ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
-ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://co.agentrouter.org")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 
 # --- Initial Checks ---
