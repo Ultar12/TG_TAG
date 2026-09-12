@@ -72,6 +72,9 @@ ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingu
 AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
 AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
 AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
+ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 
 # --- Initial Checks ---
 missing_required = [
@@ -965,9 +968,9 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
-    if not agentrouter_client:
+    if not agentrouter_client and not ANTHROPIC_AUTH_TOKEN:
         await update.message.reply_text(
-            "AgentRouter is not configured. Add AGENTROUTER_API_KEY and restart TG_TAG."
+            "AgentRouter is not configured. Add AGENTROUTER_API_KEY or ANTHROPIC_AUTH_TOKEN and restart TG_TAG."
         )
         return
     prompt = " ".join(context.args).strip()
@@ -981,19 +984,42 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     feedback = await update.message.reply_text("Thinking with AgentRouter...")
     try:
-        response = await agentrouter_client.chat.completions.create(
-            model=AGENTROUTER_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
+        if ANTHROPIC_AUTH_TOKEN:
+            response = await asyncio.to_thread(
+                requests.post,
+                f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
+                headers={
+                    "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
                 },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=1200,
-            temperature=0.6,
-        )
-        answer = response.choices[0].message.content if response.choices else None
+                json={
+                    "model": ANTHROPIC_MODEL,
+                    "max_tokens": 1200,
+                    "temperature": 0.6,
+                    "system": "Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=120,
+            )
+            if not response.ok:
+                raise RuntimeError(f"Anthropic gateway error ({response.status_code}): {response.text[:500]}")
+            payload = response.json()
+            answer = "".join(item.get("text", "") for item in payload.get("content", []) if item.get("type") == "text")
+        else:
+            response = await agentrouter_client.chat.completions.create(
+                model=AGENTROUTER_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=1200,
+                temperature=0.6,
+            )
+            answer = response.choices[0].message.content if response.choices else None
         if not answer:
             raise RuntimeError("AgentRouter returned an empty response.")
         await feedback.edit_text(answer[:4090])

@@ -83,6 +83,20 @@
       "value": "claude-opus-4-8",
       "required": false
     },
+    "ANTHROPIC_AUTH_TOKEN": {
+      "description": "Anthropic-compatible AgentRouter token used by /ai when configured.",
+      "required": false
+    },
+    "ANTHROPIC_BASE_URL": {
+      "description": "Anthropic-compatible AgentRouter base URL.",
+      "value": "https://agentrouter.org",
+      "required": false
+    },
+    "ANTHROPIC_MODEL": {
+      "description": "Anthropic-compatible AgentRouter model used by /ai.",
+      "value": "claude-opus-5",
+      "required": false
+    },
     "GMAIL_ADDRESS": {
       "description": "Optional Gmail address for the admin email feature.",
       "required": false
