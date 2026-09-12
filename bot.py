@@ -13,6 +13,10 @@ import json
 from bs4 import BeautifulSoup
 import base64
 import openai # For DALL-E image creation
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None
 import pytesseract # For OCR
 from PIL import Image # For OCR
 import io # For OCR
@@ -116,6 +120,19 @@ try:
 except Exception as e:
     agentrouter_client = None
     logger.error("Failed to configure AgentRouter API: %s", e)
+
+try:
+    if ANTHROPIC_AUTH_TOKEN and AsyncAnthropic:
+        anthropic_client = AsyncAnthropic(
+            api_key=ANTHROPIC_AUTH_TOKEN,
+            base_url=ANTHROPIC_BASE_URL,
+        )
+        logger.info("Anthropic-compatible AgentRouter client configured with model %s.", ANTHROPIC_MODEL)
+    else:
+        anthropic_client = None
+except Exception as e:
+    anthropic_client = None
+    logger.error("Failed to configure Anthropic AgentRouter client: %s", e)
 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
@@ -968,7 +985,7 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
-    if not agentrouter_client and not ANTHROPIC_AUTH_TOKEN:
+    if not agentrouter_client and not anthropic_client:
         await update.message.reply_text(
             "AgentRouter is not configured. Add AGENTROUTER_API_KEY or ANTHROPIC_AUTH_TOKEN and restart TG_TAG."
         )
@@ -984,43 +1001,16 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     feedback = await update.message.reply_text("Thinking with AgentRouter...")
     try:
-        if ANTHROPIC_AUTH_TOKEN:
-            anthropic_base_url = ANTHROPIC_BASE_URL.rstrip('/')
-            # agentrouter.org is the web/WAF host; the documented API host is
-            # co.agentrouter.org. Normalize the old value automatically.
-            if anthropic_base_url == "https://agentrouter.org":
-                anthropic_base_url = "https://co.agentrouter.org"
-            response = await asyncio.to_thread(
-                requests.post,
-                f"{anthropic_base_url}/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_AUTH_TOKEN,
-                    "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",
-                    "anthropic-version": "2023-06-01",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": ANTHROPIC_MODEL,
-                    "max_tokens": 1200,
-                    "temperature": 0.6,
-                    "system": "Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=120,
+        if anthropic_client:
+            response = await anthropic_client.messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=1200,
+                temperature=0.6,
+                system="Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
+                messages=[{"role": "user", "content": prompt}],
             )
-            raw_response = response.text.strip()
-            if not response.ok:
-                raise RuntimeError(f"Anthropic gateway error ({response.status_code}): {raw_response[:700]}")
-            try:
-                payload = response.json()
-            except ValueError:
-                content_type = response.headers.get("content-type", "unknown")
-                raise RuntimeError(
-                    f"AgentRouter returned non-JSON data (HTTP {response.status_code}, "
-                    f"content-type {content_type}): {raw_response[:700]}"
-                )
-            answer = "".join(item.get("text", "") for item in payload.get("content", []) if item.get("type") == "text")
-        else:
+            answer = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
+        elif agentrouter_client:
             response = await agentrouter_client.chat.completions.create(
                 model=AGENTROUTER_MODEL,
                 messages=[
@@ -1034,6 +1024,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 temperature=0.6,
             )
             answer = response.choices[0].message.content if response.choices else None
+        else:
+            raise RuntimeError("No compatible AgentRouter client is available. Install the anthropic package and configure a token.")
         if not answer:
             raise RuntimeError("AgentRouter returned an empty response.")
         await feedback.edit_text(answer[:4090])
