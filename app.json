@@ -69,6 +69,20 @@
       "value": "eleven_multilingual_v2",
       "required": false
     },
+    "AGENTROUTER_API_KEY": {
+      "description": "AgentRouter API key for the /ai command.",
+      "required": false
+    },
+    "AGENTROUTER_BASE_URL": {
+      "description": "AgentRouter OpenAI-compatible base URL.",
+      "value": "https://co.agentrouter.org/v1",
+      "required": false
+    },
+    "AGENTROUTER_MODEL": {
+      "description": "AgentRouter model used by /ai.",
+      "value": "claude-opus-4-8",
+      "required": false
+    },
     "GMAIL_ADDRESS": {
       "description": "Optional Gmail address for the admin email feature.",
       "required": false

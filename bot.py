@@ -69,6 +69,9 @@ SCREENSHOT_API_KEY = os.environ.get("SCREENSHOT_API_KEY")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
+AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
+AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
+AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
 
 # --- Initial Checks ---
 missing_required = [
@@ -97,6 +100,19 @@ try:
         logger.info("OpenAI client configured for DALL-E.")
     else: openai_client = None; logger.warning("OPENAI_API_KEY not found.")
 except Exception as e: openai_client = None; logger.error(f"Failed to configure OpenAI API: {e}")
+
+try:
+    if AGENTROUTER_API_KEY:
+        agentrouter_client = openai.AsyncOpenAI(
+            api_key=AGENTROUTER_API_KEY,
+            base_url=AGENTROUTER_BASE_URL,
+        )
+        logger.info("AgentRouter client configured with model %s.", AGENTROUTER_MODEL)
+    else:
+        agentrouter_client = None
+except Exception as e:
+    agentrouter_client = None
+    logger.error("Failed to configure AgentRouter API: %s", e)
 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
@@ -332,6 +348,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/play <song name>**: Search and download a song or video.\n"
         "**/tts <text>**: Convert text to speech.\n"
         "**/clonevoice**: Create a consent-based voice profile from a voice message or video, then generate voice notes from text.\n"
+        "**/ai <question>**: Test AgentRouter in any supported language.\n"
         "**/session**: Generate a Telethon session string (admin only, private chat).\n"
         "**/connect +<number>**: Connect to a WhatsApp account using a pairing code."
     )
@@ -945,6 +962,44 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
     finally:
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
+
+async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Test AgentRouter with a short multilingual question."""
+    if not agentrouter_client:
+        await update.message.reply_text(
+            "AgentRouter is not configured. Add AGENTROUTER_API_KEY and restart TG_TAG."
+        )
+        return
+    prompt = " ".join(context.args).strip()
+    if not prompt and update.message.reply_to_message and update.message.reply_to_message.text:
+        prompt = update.message.reply_to_message.text.strip()
+    if not prompt:
+        await update.message.reply_text("Usage: /ai <your question> — or reply to a text message with /ai")
+        return
+    if len(prompt) > 4000:
+        await update.message.reply_text("Please keep the test prompt under 4000 characters.")
+        return
+    feedback = await update.message.reply_text("Thinking with AgentRouter...")
+    try:
+        response = await agentrouter_client.chat.completions.create(
+            model=AGENTROUTER_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1200,
+            temperature=0.6,
+        )
+        answer = response.choices[0].message.content if response.choices else None
+        if not answer:
+            raise RuntimeError("AgentRouter returned an empty response.")
+        await feedback.edit_text(answer[:4090])
+    except Exception as exc:
+        logger.exception("AgentRouter /ai failed: %s", exc)
+        await feedback.edit_text(f"AgentRouter test failed: {str(exc)[:700]}")
 
 def _elevenlabs_headers() -> dict:
     if not ELEVENLABS_API_KEY:
@@ -2739,7 +2794,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("4k", four_k_upscale_command), # NEW 4K VIDEO COMMAND
         CommandHandler("novel", novel_command), CommandHandler("riddle", get_riddle), 
         CommandHandler("gmail", gmail_command), CommandHandler("screenshot", screenshot_command),
-        CommandHandler("movie", movie_command), CommandHandler("tts", tts_command),
+        CommandHandler("movie", movie_command), CommandHandler("tts", tts_command), CommandHandler("ai", ai_command),
         CommandHandler("clonevoice", clone_voice_command), CommandHandler("voice", voice_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
