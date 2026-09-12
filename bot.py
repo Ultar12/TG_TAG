@@ -992,6 +992,12 @@ async def clone_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not ELEVENLABS_API_KEY:
         await update.message.reply_text("Voice cloning is not configured yet. Add ELEVENLABS_API_KEY to the bot environment.")
         return
+    replied = update.message.reply_to_message
+    replied_media = replied and (replied.voice or replied.audio or replied.video or replied.document)
+    if replied_media:
+        context.user_data['state'] = 'awaiting_voice_sample'
+        await handle_voice_sample(update, context, source_message=replied)
+        return
     context.user_data['state'] = 'awaiting_voice_sample'
     await update.message.reply_text(
         "Send a clear voice message or a video containing the speaker's voice.\n\n"
@@ -999,8 +1005,8 @@ async def clone_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "Only clone a voice when you have the speaker's permission. I will ask you to confirm consent before creating the voice profile."
     )
 
-async def handle_voice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
+async def handle_voice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE, source_message=None) -> None:
+    message = source_message or update.message
     if not message or context.user_data.get('state') != 'awaiting_voice_sample':
         return
     media = message.voice or message.audio or message.video or message.document
@@ -1011,7 +1017,7 @@ async def handle_voice_sample(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.pop('state', None)
     temp_dir = os.path.join(DOWNLOAD_DIR, f"voice_clone_{uuid.uuid4().hex}")
     os.makedirs(temp_dir, exist_ok=True)
-    feedback = await message.reply_text("I received the sample. Checking the audio quality...")
+    feedback = await update.message.reply_text("I received the sample. Checking the audio quality...")
     try:
         source_path = os.path.join(temp_dir, "source.bin")
         telegram_file = await context.bot.get_file(media.file_id)
