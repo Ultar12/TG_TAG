@@ -181,8 +181,9 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if duration <= 0:
             raise RuntimeError("Could not read video duration")
 
-        # Up to twelve evenly spaced frames, avoiding the often-black first/last frame.
-        frame_count = min(12, max(3, int(duration // 1) + 1))
+        # TG_TAG-style duration-based selection: approximately one frame per
+        # second, bounded to keep uploads practical.
+        frame_count = min(30, max(3, round(duration)))
         timestamps = [duration * (index + 1) / (frame_count + 1) for index in range(frame_count)]
         frame_paths = []
         for index, timestamp in enumerate(timestamps, start=1):

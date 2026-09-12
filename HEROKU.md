@@ -40,7 +40,7 @@ POST /api/play        {"query": "artist song", "mode": "audio"}
 POST /api/play        {"query": "artist song", "mode": "video"}
 ```
 
-The API routes are public and do not require an API token. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/video-to-photos` downloads a public video URL with yt-dlp and returns a ZIP containing up to twelve full-resolution JPG snapshots; add `format=json` to receive base64-encoded images for plugin integrations. `/api/play-hook` and `/api/play` search YouTube and return either an MP3 (`mode: "audio"`) or an audio-bearing MP4 (`mode: "video"`), with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
+The API routes are public and do not require an API token. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/video-to-photos` downloads a public video URL with yt-dlp and dynamically selects approximately one full-resolution JPG snapshot per second, bounded to a practical maximum; add `format=json` to receive base64-encoded images for plugin integrations. `/api/play-hook` and `/api/play` search YouTube and return either an MP3 (`mode: "audio"`) or an audio-bearing MP4 (`mode: "video"`), with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
 
 ## Environment variables
 

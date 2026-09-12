@@ -892,7 +892,7 @@ def _extract_video_photos_sync(
     source_url: str,
     common_options: Mapping[str, Any],
 ) -> bytes:
-    """Download a video URL and return up to twelve sharp representative JPGs as a ZIP."""
+    """Download a video URL and return duration-based sharp representative JPGs as a ZIP."""
     video_path, temp_dir = _download_video_file_sync(
         source_url,
         common_options,
@@ -913,7 +913,9 @@ def _extract_video_photos_sync(
         if duration <= 0:
             raise MediaAPIError("Could not read the video duration.")
 
-        frame_count = min(12, max(3, int(duration // 1) + 1))
+        # TG_TAG chooses the count from duration: approximately one frame per
+        # second, with bounds to avoid flooding chats or exhausting resources.
+        frame_count = min(30, max(3, round(duration)))
         archive = BytesIO()
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
             written = 0
