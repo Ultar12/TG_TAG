@@ -7,7 +7,13 @@ from html import escape as html_escape
 from telegram import Update
 from telegram.ext import ConversationHandler, ContextTypes
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import (
+    PasswordHashInvalidError,
+    PasswordMissingError,
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    SessionPasswordNeededError,
+)
 from telethon.sessions import StringSession
 
 logger = logging.getLogger(__name__)
@@ -164,11 +170,30 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await client.sign_in(phone=context.user_data["session_phone"], code=code)
     except SessionPasswordNeededError:
         await _delete_user_message(update)
-        await _send_prompt(update, context, "Two-step verification is enabled. Send your Telegram 2FA password.")
+        await _send_prompt(
+            update,
+            context,
+            "The login code is correct. Two-step verification is enabled on this account.\n\n"
+            "Now send your Telegram 2FA password."
+        )
         return PASSWORD
+    except PhoneCodeExpiredError:
+        await update.message.reply_text("That login code has expired. Start /session again to request a new code.")
+        await client.disconnect()
+        context.user_data.clear()
+        return ConversationHandler.END
+    except PhoneCodeInvalidError:
+        await update.message.reply_text("That login code is invalid. Copy the newest Telegram code and send it again.")
+        return CODE
     except Exception as exc:
         logger.warning("Telethon sign-in failed: %s", exc)
-        await update.message.reply_text("The login code was rejected. Start again with /session.")
+        # Some Telethon versions/providers expose the 2FA challenge through
+        # the error text rather than the typed exception.
+        if "PASSWORD_NEEDED" in str(exc).upper() or "SESSION_PASSWORD" in str(exc).upper():
+            await _delete_user_message(update)
+            await _send_prompt(update, context, "Two-step verification is enabled. Send your Telegram 2FA password.")
+            return PASSWORD
+        await update.message.reply_text(f"The login code was rejected: {str(exc)[:180]}")
         await client.disconnect()
         context.user_data.clear()
         return ConversationHandler.END
@@ -184,11 +209,19 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not client:
         await update.message.reply_text("This session expired. Start again with /session.")
         return ConversationHandler.END
+    password = update.message.text.strip()
+    if not password:
+        await update.message.reply_text("Please send your Telegram 2FA password, or use /cancel.")
+        return PASSWORD
     try:
-        await client.sign_in(password=update.message.text)
+        await client.sign_in(password=password)
+    except (PasswordHashInvalidError, PasswordMissingError):
+        await _delete_user_message(update)
+        await _send_prompt(update, context, "That 2FA password was incorrect. Send it again, or use /cancel.")
+        return PASSWORD
     except Exception as exc:
         logger.warning("Telethon 2FA sign-in failed: %s", exc)
-        await update.message.reply_text("The 2FA password was rejected. Start again with /session.")
+        await update.message.reply_text(f"The 2FA password was rejected: {str(exc)[:180]}")
         await client.disconnect()
         context.user_data.clear()
         return ConversationHandler.END
