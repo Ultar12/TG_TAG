@@ -987,12 +987,15 @@ class VideoPhotosHandler(_BaseHandler):
 
     async def post(self) -> None:
         uploaded = self.request.files.get("video", [])
-        if uploaded:
-            upload = uploaded[0]
+        upload_body = uploaded[0].body if uploaded else None
+        content_type = self.request.headers.get("Content-Type", "").lower()
+        if upload_body is None and content_type.startswith("video/") and self.request.body:
+            upload_body = self.request.body
+        if upload_body is not None:
             temp_input = tempfile.NamedTemporaryFile(
                 prefix="tg_tag_upload_", suffix=".mp4", delete=False
             )
-            temp_input.write(upload.body)
+            temp_input.write(upload_body)
             temp_input.close()
             try:
                 archive = await asyncio.to_thread(

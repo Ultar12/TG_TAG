@@ -29,17 +29,17 @@ Module({
 
         await message.sendReply('_Uploading the video to TG_TAG for UHD snapshots..._');
 
-        const form = new FormData();
-        form.append('video', new Blob([videoBuffer], { type: replied.mimetype || 'video/mp4' }), 'video.mp4');
-        form.append('format', 'json');
-
         const response = await fetch(getSnapshotEndpoint(config.PLAY_URL), {
             method: 'POST',
-            body: form
+            headers: {
+                'content-type': replied.mimetype || 'video/mp4'
+            },
+            body: videoBuffer
         });
 
         if (!response.ok) {
-            throw new Error(`TG_TAG returned HTTP ${response.status}`);
+            const errorText = await response.text();
+            throw new Error(`TG_TAG returned HTTP ${response.status}: ${errorText.slice(0, 200)}`);
         }
 
         const result = await response.json();
@@ -56,6 +56,6 @@ Module({
         }
     } catch (error) {
         console.error('snapshot plugin error:', error);
-        await message.sendReply('_TG_TAG could not extract photos from that video._');
+        await message.sendReply(`_TG_TAG could not extract photos from that video._\n\n\`${String(error.message || error).slice(0, 250)}\``);
     }
 });
