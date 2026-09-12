@@ -1013,7 +1013,14 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
             if not response.ok:
                 raise RuntimeError(f"Anthropic gateway error ({response.status_code}): {response.text[:700]}")
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError:
+                content_type = response.headers.get("content-type", "unknown")
+                raise RuntimeError(
+                    f"AgentRouter returned non-JSON data (HTTP {response.status_code}, "
+                    f"content-type {content_type}): {response.text[:700]}"
+                )
             if payload.get("content"):
                 answer = "".join(block.get("text", "") for block in payload["content"] if block.get("type") == "text").strip()
             elif payload.get("choices"):
