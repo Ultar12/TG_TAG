@@ -892,13 +892,18 @@ def _extract_video_photos_sync(
     source_url: str,
     common_options: Mapping[str, Any],
 ) -> bytes:
-    """Download a video URL and return duration-based sharp representative JPGs as a ZIP."""
-    video_path, temp_dir = _download_video_file_sync(
-        source_url,
-        common_options,
-        require_audio=False,
-        max_height=2160,
-    )
+    """Download a video URL and return up to twelve sharp representative JPGs as a ZIP."""
+    uploaded_source = os.path.isfile(source_url)
+    if uploaded_source:
+        video_path = source_url
+        temp_dir = tempfile.mkdtemp(prefix="tg_tag_uploaded_frames_")
+    else:
+        video_path, temp_dir = _download_video_file_sync(
+            source_url,
+            common_options,
+            require_audio=False,
+            max_height=2160,
+        )
     try:
         probe = subprocess.run(
             [
@@ -981,6 +986,40 @@ class VideoPhotosHandler(_BaseHandler):
         )
 
     async def post(self) -> None:
+        uploaded = self.request.files.get("video", [])
+        if uploaded:
+            upload = uploaded[0]
+            temp_input = tempfile.NamedTemporaryFile(
+                prefix="tg_tag_upload_", suffix=".mp4", delete=False
+            )
+            temp_input.write(upload.body)
+            temp_input.close()
+            try:
+                archive = await asyncio.to_thread(
+                    _extract_video_photos_sync, temp_input.name, self.common_options
+                )
+                with zipfile.ZipFile(BytesIO(archive)) as source:
+                    images = [
+                        {
+                            "filename": name,
+                            "data": base64.b64encode(source.read(name)).decode("ascii"),
+                        }
+                        for name in source.namelist()
+                        if name.lower().endswith(".jpg")
+                    ]
+                self.set_header("Content-Type", "application/json")
+                self.write({"type": "images", "count": len(images), "images": images})
+            except Exception:
+                logger.exception("/api/video-to-photos upload failed")
+                self.set_status(502)
+                self.write({"error": "Could not extract photos from the uploaded video."})
+            finally:
+                try:
+                    os.unlink(temp_input.name)
+                except FileNotFoundError:
+                    pass
+            return
+
         body = self._json_body()
         await self._handle(
             body.get("url") or self.get_body_argument("url", default=""),

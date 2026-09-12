@@ -13,7 +13,7 @@ Module({
     pattern: 'snapshot',
     desc: 'Extract clear UHD photos from a replied video',
     use: 'media',
-    usage: 'snapshot',
+    usage: 'snapshot'
 }, async (message) => {
     const replied = message.reply_message;
 
@@ -22,21 +22,20 @@ Module({
     }
 
     try {
-        const inputUrl = replied.url;
-        if (!inputUrl) {
-            return await message.sendReply('_I could not get the video URL._');
+        const videoBuffer = await replied.download('buffer');
+        if (!videoBuffer || !videoBuffer.length) {
+            throw new Error('Could not download the replied video');
         }
 
-        await message.sendReply('_Sending the video to TG_TAG for UHD snapshots..._');
+        await message.sendReply('_Uploading the video to TG_TAG for UHD snapshots..._');
 
-        const endpoint = getSnapshotEndpoint(config.PLAY_URL);
-        const response = await fetch(endpoint, {
+        const form = new FormData();
+        form.append('video', new Blob([videoBuffer], { type: replied.mimetype || 'video/mp4' }), 'video.mp4');
+        form.append('format', 'json');
+
+        const response = await fetch(getSnapshotEndpoint(config.PLAY_URL), {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-                url: inputUrl,
-                format: 'json',
-            }),
+            body: form
         });
 
         if (!response.ok) {
@@ -50,10 +49,9 @@ Module({
 
         for (let index = 0; index < result.images.length; index += 1) {
             const item = result.images[index];
-            const imageBuffer = Buffer.from(item.data, 'base64');
-            await message.sendMessage(imageBuffer, 'image', {
+            await message.sendMessage(Buffer.from(item.data, 'base64'), 'image', {
                 fileName: item.filename || `snapshot-${index + 1}.jpg`,
-                caption: index === 0 ? '_UHD snapshots from TG_TAG_' : undefined,
+                caption: index === 0 ? '_UHD snapshots from TG_TAG_' : undefined
             });
         }
     } catch (error) {
