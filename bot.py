@@ -1768,11 +1768,14 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                         await context.bot.send_photo(
                             chat_id=update.effective_chat.id,
                             photo=downloaded_images[0],
-                            caption=caption if batch_start == 0 else None,
+                            caption=caption if batch_start + len(downloaded_images) == len(valid_urls) else None,
                         )
                         continue
                     media = [
-                        InputMediaPhoto(media=image_bytes, caption=caption if index == 0 else None)
+                        InputMediaPhoto(
+                            media=image_bytes,
+                            caption=caption if batch_start + index + 1 == len(valid_urls) else None,
+                        )
                         for index, image_bytes in enumerate(downloaded_images)
                     ]
                     try:
@@ -1786,7 +1789,7 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                             await context.bot.send_photo(
                                 chat_id=update.effective_chat.id,
                                 photo=image_bytes,
-                                caption=caption if index == 0 else None,
+                                caption=caption if batch_start + index + 1 == len(valid_urls) else None,
                             )
             await feedback.delete()
             return

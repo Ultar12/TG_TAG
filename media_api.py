@@ -748,7 +748,7 @@ def _search_youtube_sync(query: str, common_options: Mapping[str, Any]) -> dict[
 def _tikwm_image_urls(data: Mapping[str, Any]) -> list[str]:
     """Normalize image fields returned by TikWM API variants."""
     candidates: list[Any] = []
-    for field in ("images", "slides", "image", "pics"):
+    for field in ("images", "slides", "image", "pics", "items", "image_list", "image_urls"):
         value = data.get(field)
         if isinstance(value, list):
             candidates.extend(value)
@@ -767,9 +767,16 @@ def _tikwm_image_urls(data: Mapping[str, Any]) -> list[str]:
             if value.startswith(("http://", "https://")) and value not in urls:
                 urls.append(value)
         elif isinstance(item, Mapping):
-            for key in ("url", "download_addr", "src", "url_list", "imageURL", "thumbnail"):
+            for key in (
+                "url", "download_addr", "src", "url_list", "imageURL", "image_url",
+                "image_urls", "display_image", "display_image_url", "thumbnail",
+                "origin_cover", "origin_image",
+            ):
                 if key in item:
                     collect(item[key])
+            for key, value in item.items():
+                if any(token in str(key).lower() for token in ("image", "slide", "pic")):
+                    collect(value)
         elif isinstance(item, list):
             for value in item:
                 collect(value)
