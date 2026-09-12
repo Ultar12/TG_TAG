@@ -20,6 +20,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 import tornado.web
+import tornado.websocket
 from tornado.httpserver import HTTPServer
 import yt_dlp
 from telegram import Update
@@ -31,6 +32,8 @@ PLAY_JOB_TTL_SECONDS = 1800
 PLAY_JOB_MAX_ACTIVE = 2
 PLAY_JOBS: dict[str, dict[str, Any]] = {}
 TG_STICKER_JOBS: dict[str, dict[str, Any]] = {}
+AI_WS_CLIENTS: set[Any] = set()
+AI_WS_REQUESTS: dict[str, Any] = {}
 TG_STICKER_JOB_TTL_SECONDS = 1800
 TG_STICKER_PACK_RE = re.compile(r"^https?://t\.me/addstickers/([A-Za-z0-9_-]+)(?:\?.*)?$", re.IGNORECASE)
 MEDIA_USER_AGENT = (
@@ -1337,6 +1340,75 @@ class PlayJobResultHandler(_BaseHandler):
         PLAY_JOBS.pop(job_id, None)
 
 
+class AIWebSocketHandler(tornado.websocket.WebSocketHandler):
+    """Bridge TG_TAG AI requests to a connected Termux worker."""
+
+    def check_origin(self, origin: str) -> bool:
+        return True
+
+    def open(self) -> None:
+        role = self.get_query_argument("role", default="")
+        self.is_worker = role == "worker"
+        AI_WS_CLIENTS.add(self)
+        logger.info("AI WebSocket connected: %s", self.request.remote_ip)
+
+    def on_message(self, raw_message: str | bytes) -> None:
+        if isinstance(raw_message, bytes):
+            return
+        try:
+            message = json.loads(raw_message)
+        except (TypeError, json.JSONDecodeError):
+            self.write_message(json.dumps({"action": "error", "message": "Invalid WebSocket JSON."}))
+            return
+
+        action = message.get("action")
+        if action == "ping":
+            self.is_worker = True
+            self.write_message(json.dumps({"action": "ping"}))
+            return
+
+        if action == "ai_prompt":
+            worker = next((client for client in AI_WS_CLIENTS if getattr(client, "is_worker", False)), None)
+            if worker is None:
+                self.write_message(json.dumps({
+                    "action": "ai_response",
+                    "reqId": message.get("reqId"),
+                    "success": False,
+                    "error": "Termux AI worker is offline.",
+                }))
+                return
+            request_id = str(message.get("reqId") or uuid.uuid4().hex)
+            message["reqId"] = request_id
+            AI_WS_REQUESTS[request_id] = self
+            try:
+                worker.write_message(json.dumps(message))
+            except Exception:
+                AI_WS_REQUESTS.pop(request_id, None)
+                self.write_message(json.dumps({
+                    "action": "ai_response",
+                    "reqId": request_id,
+                    "success": False,
+                    "error": "Could not reach the Termux AI worker.",
+                }))
+            return
+
+        if action == "ai_response":
+            requester = AI_WS_REQUESTS.pop(str(message.get("reqId")), None)
+            if requester is not None:
+                try:
+                    requester.write_message(json.dumps(message))
+                except Exception:
+                    pass
+            return
+
+    def on_close(self) -> None:
+        AI_WS_CLIENTS.discard(self)
+        for request_id, requester in list(AI_WS_REQUESTS.items()):
+            if requester is self:
+                AI_WS_REQUESTS.pop(request_id, None)
+        logger.info("AI WebSocket disconnected: %s", self.request.remote_ip)
+
+
 class TelegramWebhookHandler(tornado.web.RequestHandler):
     def initialize(self, bot: Any, update_queue: Any, secret_token: str | None = None) -> None:
         self.bot = bot
@@ -1377,6 +1449,7 @@ async def _run_combined_webhook(
     webhook_path = re.escape(bot_token)
     tornado_app = tornado.web.Application(
         [
+            (r"/ai/?", AIWebSocketHandler),
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
             (r"/api/video-to-photos/?", VideoPhotosHandler, {"common_options": common_options}),

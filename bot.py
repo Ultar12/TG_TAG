@@ -79,7 +79,7 @@ AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
 ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
-TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/")
+TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/ai")
 
 # --- Initial Checks ---
 missing_required = [
