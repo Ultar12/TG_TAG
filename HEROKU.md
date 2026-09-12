@@ -34,12 +34,13 @@ The same web process exposes the scraper-compatible media API:
 
 ```text
 GET  /api/download?url=<public-media-url>
+GET  /api/video-to-photos?url=<public-video-url>
 POST /api/play-hook   {"query": "artist song", "mode": "audio"}
 POST /api/play        {"query": "artist song", "mode": "audio"}
 POST /api/play        {"query": "artist song", "mode": "video"}
 ```
 
-The API routes are public and do not require an API token. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/play-hook` and `/api/play` search YouTube and return either an MP3 (`mode: "audio"`) or an audio-bearing MP4 (`mode: "video"`), with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
+The API routes are public and do not require an API token. `/api/download` returns a media file or a JSON image list for supported TikTok carousels. `/api/video-to-photos` downloads a public video URL with yt-dlp and returns a ZIP containing up to six representative JPG snapshots. `/api/play-hook` and `/api/play` search YouTube and return either an MP3 (`mode: "audio"`) or an audio-bearing MP4 (`mode: "video"`), with `X-Track-Title`, `X-Track-Artist`, and `X-Track-Source` headers.
 
 ## Environment variables
 

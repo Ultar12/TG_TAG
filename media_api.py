@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 import time
 import uuid
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote, urlparse
@@ -885,6 +887,57 @@ def _download_tikwm_sync(url: str) -> tuple[str, Any] | None:
     return "video", (media_response.content, caption)
 
 
+def _extract_video_photos_sync(
+    source_url: str,
+    common_options: Mapping[str, Any],
+) -> bytes:
+    """Download a video URL and return up to six representative JPGs as a ZIP."""
+    video_path, temp_dir = _download_video_file_sync(
+        source_url,
+        common_options,
+        require_audio=False,
+        max_height=1080,
+    )
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+            ], capture_output=True, text=True, timeout=30, check=False,
+        )
+        try:
+            duration = float(probe.stdout.strip())
+        except (ValueError, TypeError):
+            duration = 0
+        if duration <= 0:
+            raise MediaAPIError("Could not read the video duration.")
+
+        frame_count = min(6, max(2, int(duration // 2) + 1))
+        archive = BytesIO()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+            written = 0
+            for index in range(frame_count):
+                timestamp = duration * (index + 1) / (frame_count + 1)
+                frame_path = os.path.join(temp_dir, f"snapshot-{index + 1}.jpg")
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                        "-ss", f"{timestamp:.3f}", "-i", video_path,
+                        "-frames:v", "1", "-vf",
+                        "scale=1600:-2:force_original_aspect_ratio=decrease",
+                        "-q:v", "2", frame_path,
+                    ], capture_output=True, text=True, timeout=90, check=False,
+                )
+                if result.returncode == 0 and os.path.isfile(frame_path):
+                    output.write(frame_path, arcname=f"snapshot-{written + 1}.jpg")
+                    written += 1
+            if not written:
+                raise MediaAPIError("No snapshots could be extracted from the video.")
+        return archive.getvalue()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 class _BaseHandler(tornado.web.RequestHandler):
     def initialize(self, common_options: Mapping[str, Any]) -> None:
         self.common_options = common_options
@@ -917,6 +970,29 @@ class _BaseHandler(tornado.web.RequestHandler):
             while chunk := source.read(1024 * 1024):
                 self.write(chunk)
                 await self.flush()
+
+
+class VideoPhotosHandler(_BaseHandler):
+    async def get(self) -> None:
+        await self._handle(self.get_query_argument("url", default=""))
+
+    async def post(self) -> None:
+        body = self._json_body()
+        await self._handle(body.get("url") or self.get_body_argument("url", default=""))
+
+    async def _handle(self, raw_url: Any) -> None:
+        try:
+            url = _safe_url(raw_url)
+            archive = await asyncio.to_thread(
+                _extract_video_photos_sync, url, self.common_options
+            )
+            self._write_media(archive, "video-snapshots.zip", "application/zip")
+        except tornado.web.HTTPError:
+            raise
+        except Exception:
+            logger.exception("/api/video-to-photos failed")
+            self.set_status(502)
+            self.write({"error": "Could not extract photos from that video."})
 
 
 class HealthHandler(tornado.web.RequestHandler):
@@ -1234,6 +1310,7 @@ async def _run_combined_webhook(
         [
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
+            (r"/api/video-to-photos/?", VideoPhotosHandler, {"common_options": common_options}),
             (r"/api/tg-stickers/?", TelegramStickerPackHandler, {"common_options": common_options}),
             (r"/api/tg-stickers/([a-f0-9]{32})/?", TelegramStickerStatusHandler, {"common_options": common_options}),
             (r"/api/tg-stickers/([a-f0-9]{32})/([0-9]+)/?", TelegramStickerHandler, {"common_options": common_options}),
