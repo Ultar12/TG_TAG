@@ -99,7 +99,7 @@
     },
     "TERMUX_WS_URL": {
       "description": "WebSocket URL of the Termux AI worker used by /ai.",
-      "value": "wss://scr-tls-26dea6-d35aec677ebb.herokuapp.com/",
+      "value": "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/",
       "required": false
     },
     "GMAIL_ADDRESS": {
