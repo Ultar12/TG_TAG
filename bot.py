@@ -312,6 +312,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**Bot Commands Guide:**\n\n"
         "You can use the menu buttons or the following commands:\n\n"
         "**/create <prompt>**: Generate an image from text.\n"
+        "**/edit <instruction>**: Reply to a photo and edit it realistically.\n"
         "**/novel <title>**: Search for a novel to download.\n"
         "**/movie <title>**: Get information about a movie.\n"
         "**/ytsearch <query>**: Search for YouTube videos.\n"
@@ -599,6 +600,52 @@ async def create_image_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"DALL-E 3 API error: {e}")
         await feedback.edit_text("Sorry, I couldn't create the image.")
+
+async def edit_photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Edit a replied Telegram photo using a realistic natural-language instruction."""
+    if not openai_client:
+        await update.message.reply_text("Photo editing is not configured. Set OPENAI_API_KEY first.")
+        return
+    instruction = " ".join(context.args).strip()
+    replied = update.message.reply_to_message
+    if not replied or not replied.photo:
+        await update.message.reply_text("Reply to a photo with /edit followed by what you want changed.")
+        return
+    if not instruction:
+        await update.message.reply_text("Example: /edit replace the background with a realistic beach at sunset")
+        return
+    feedback = await update.message.reply_text("Processing realistic photo edit...")
+    try:
+        telegram_file = await context.bot.get_file(replied.photo[-1].file_id)
+        image_bytes = await telegram_file.download_as_bytearray()
+        prompt = (
+            "Edit the provided photograph realistically. Change only what the user requests. "
+            "Preserve identity, facial features, pose, proportions, camera angle, lighting, perspective, "
+            "image quality, and all non-target details. Integrate the change with accurate shadows, "
+            "reflections, depth of field, texture, and color. Do not add text, watermarks, extra people, "
+            f"or invented objects. User instruction: {instruction}"
+        )
+        result = await openai_client.images.edit(
+            model=os.environ.get("IMAGE_EDIT_MODEL", "gpt-image-1"),
+            image=io.BytesIO(bytes(image_bytes)),
+            prompt=prompt,
+            size="auto",
+            quality="low",
+        )
+        image_data = result.data[0]
+        if getattr(image_data, "b64_json", None):
+            output = base64.b64decode(image_data.b64_json)
+        elif getattr(image_data, "url", None):
+            response = requests.get(image_data.url, timeout=60)
+            response.raise_for_status()
+            output = response.content
+        else:
+            raise RuntimeError("The image service returned no edited image.")
+        await context.bot.send_photo(update.effective_chat.id, photo=output, caption="Realistic photo edit")
+        await feedback.delete()
+    except Exception as exc:
+        logger.exception("Photo edit failed: %s", exc)
+        await feedback.edit_text("Photo editing failed. Please try a different instruction or image.")
 
 async def upscale_image_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not REPLICATE_API_TOKEN:
@@ -2465,7 +2512,8 @@ def main() -> None:
     session_conversation = configure_session_conversation(build_session_conversation(ADMIN_ID))
     cmd_handlers = [
         CommandHandler("start", start), CommandHandler("help", help_command),
-CommandHandler("create", create_image_command),
+        CommandHandler("create", create_image_command),
+        CommandHandler("edit", edit_photo_command),
         CommandHandler("upscale", upscale_image_command), CommandHandler("animate", animate_command),
 CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("play", play_command), CommandHandler("mp4", convert_video_to_audio),
