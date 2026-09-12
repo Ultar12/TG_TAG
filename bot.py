@@ -2933,10 +2933,13 @@ CommandHandler("readtext", read_text_from_image_command),
     webhook_base_url = (
         os.environ.get("WEBHOOK_URL")
         or os.environ.get("RENDER_EXTERNAL_URL")
+        or os.environ.get("HEROKU_APP_URL")
     )
     legacy_render_name = os.environ.get("RENDER_APP_NAME")
     if not webhook_base_url and legacy_render_name:
         webhook_base_url = f"https://{legacy_render_name}.onrender.com"
+    if not webhook_base_url:
+        webhook_base_url = "https://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com"
 
     # Heroku dynos must use an explicit public HTTPS URL for Telegram webhooks.
     # Do not silently switch a Heroku deployment back to polling mode.
