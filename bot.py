@@ -1159,20 +1159,24 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         filters_result = await client(GetDialogFiltersRequest())
         raw_folders = getattr(filters_result, "filters", filters_result)
         folders = [item for item in raw_folders if getattr(item, "title", None)]
+        def folder_title(item) -> str:
+            title = getattr(item, "title", "")
+            return str(getattr(title, "text", title)).strip()
         if not folders:
             await update.message.reply_text("No Telegram chat folders were found.")
             return
         requested = " ".join(context.args).strip()
         if requested:
-            match = next((item for item in folders if str(item.title) == requested), None)
+            match = next((item for item in folders if folder_title(item).casefold() == requested.casefold()), None)
             if not match:
-                names = "\n".join(f"• {item.title}" for item in folders)
+                names = "\n".join(f"• {folder_title(item)}" for item in folders)
                 await update.message.reply_text(f"Folder not found. Available folders:\n{names}")
                 return
-            folder_selections[update.effective_user.id] = (int(match.id), str(match.title))
-            await update.message.reply_text(f"Selected folder: {match.title}\nUse /suggest to generate five replies.")
+            selected_title = folder_title(match)
+            folder_selections[update.effective_user.id] = (int(match.id), selected_title)
+            await update.message.reply_text(f"Selected folder: {selected_title}\nUse /suggest to generate five replies.")
             return
-        names = "\n".join(f"• {item.title}" for item in folders)
+        names = "\n".join(f"• {folder_title(item)}" for item in folders)
         await update.message.reply_text(f"Your Telegram folders:\n{names}\n\nSelect one with:\n/folder Folder Name")
     except Exception as exc:
         logger.exception("Could not read Telegram folders: %s", exc)
