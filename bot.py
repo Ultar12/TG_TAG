@@ -39,6 +39,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from session_generator import build_session_conversation, configure_session_conversation
+from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 from sqlalchemy import create_engine, Column, String, text
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -86,6 +88,11 @@ ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/ai")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID")
+TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH")
+TELEGRAM_SESSION = os.environ.get("TELEGRAM_SESSION")
+folder_selections: dict[int, tuple[int, str]] = {}
+telegram_user_client = None
 
 # --- Initial Checks ---
 missing_required = [
@@ -1124,6 +1131,91 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as exc:
         logger.exception("AgentRouter /ai failed: %s", exc)
         await feedback.edit_text(f"Gemini test failed: {str(exc)[:700]}")
+
+
+async def _get_telegram_user_client() -> TelegramClient:
+    global telegram_user_client
+    if not (TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_SESSION):
+        raise RuntimeError("Telegram user session is not configured. Add TELEGRAM_API_ID, TELEGRAM_API_HASH, and TELEGRAM_SESSION.")
+    if telegram_user_client is None:
+        telegram_user_client = TelegramClient(
+            StringSession(TELEGRAM_SESSION), int(TELEGRAM_API_ID), TELEGRAM_API_HASH
+        )
+    if not telegram_user_client.is_connected():
+        await telegram_user_client.connect()
+    if not await telegram_user_client.is_user_authorized():
+        raise RuntimeError("The Telegram user session has expired. Generate a new session with /session.")
+    return telegram_user_client
+
+
+async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List Telegram chat folders or select one by name."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("This command is available only to the bot administrator.")
+        return
+    try:
+        client = await _get_telegram_user_client()
+        from telethon.tl.functions.messages import GetDialogFiltersRequest
+        filters_result = await client(GetDialogFiltersRequest())
+        raw_folders = getattr(filters_result, "filters", filters_result)
+        folders = [item for item in raw_folders if getattr(item, "title", None)]
+        if not folders:
+            await update.message.reply_text("No Telegram chat folders were found.")
+            return
+        requested = " ".join(context.args).strip()
+        if requested:
+            match = next((item for item in folders if str(item.title) == requested), None)
+            if not match:
+                names = "\n".join(f"• {item.title}" for item in folders)
+                await update.message.reply_text(f"Folder not found. Available folders:\n{names}")
+                return
+            folder_selections[update.effective_user.id] = (int(match.id), str(match.title))
+            await update.message.reply_text(f"Selected folder: {match.title}\nUse /suggest to generate five replies.")
+            return
+        names = "\n".join(f"• {item.title}" for item in folders)
+        await update.message.reply_text(f"Your Telegram folders:\n{names}\n\nSelect one with:\n/folder Folder Name")
+    except Exception as exc:
+        logger.exception("Could not read Telegram folders: %s", exc)
+        await update.message.reply_text(f"Could not read Telegram folders: {str(exc)[:500]}")
+
+
+async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Summarize the selected folder and produce five reply suggestions."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("This command is available only to the bot administrator.")
+        return
+    selected = folder_selections.get(update.effective_user.id)
+    if not selected:
+        await update.message.reply_text("Select a folder first with /folder Folder Name.")
+        return
+    if not gemini_client:
+        await update.message.reply_text("Gemini is not configured. Add GEMINI_API_KEY and restart TG_TAG.")
+        return
+    feedback = await update.message.reply_text(f"Reading {selected[1]} and preparing five suggestions...")
+    try:
+        client = await _get_telegram_user_client()
+        dialogs = await client.get_dialogs(folder=selected[0], limit=20)
+        transcript = []
+        for dialog in dialogs[:8]:
+            messages = [message async for message in client.iter_messages(dialog.entity, limit=6, reverse=True) if message.message]
+            if messages:
+                transcript.append(f"CHAT: {dialog.name}\n" + "\n".join(f"{m.sender_id}: {m.message}" for m in messages))
+        if not transcript:
+            raise RuntimeError("No readable text messages were found in that folder.")
+        instruction = (
+            "Analyze these Telegram conversations. For the most recent unanswered incoming message, "
+            "write exactly five distinct reply suggestions. Match the language of each conversation, "
+            "preserve tone, do not invent facts, and keep each suggestion concise. "
+            "Return only a numbered list from 1 to 5.\n\n" + "\n\n---\n\n".join(transcript)
+        )
+        interaction = await asyncio.to_thread(
+            gemini_client.interactions.create, model=GEMINI_MODEL, input=instruction
+        )
+        answer = interaction.output_text.strip()
+        await feedback.edit_text(f"Suggestions for {selected[1]}:\n\n{answer[:3900]}")
+    except Exception as exc:
+        logger.exception("Folder suggestions failed: %s", exc)
+        await feedback.edit_text(f"Could not create suggestions: {str(exc)[:700]}")
 
 def _ask_termux_ai_sync(prompt: str) -> str:
     """Send one AI request through the user's working Termux WebSocket worker."""
@@ -2955,6 +3047,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("novel", novel_command), CommandHandler("riddle", get_riddle), 
         CommandHandler("gmail", gmail_command), CommandHandler("screenshot", screenshot_command),
         CommandHandler("movie", movie_command), CommandHandler("tts", tts_command), CommandHandler("ai", ai_command),
+        CommandHandler("folder", folder_command), CommandHandler("suggest", suggest_command),
         CommandHandler("clonevoice", clone_voice_command), CommandHandler("voice", voice_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
