@@ -18,10 +18,6 @@ except ImportError:
 from bs4 import BeautifulSoup
 import base64
 import openai # For DALL-E image creation
-try:
-    from google import genai
-except ImportError:
-    genai = None
 import pytesseract # For OCR
 from PIL import Image # For OCR
 import io # For OCR
@@ -88,8 +84,6 @@ ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/ai")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH")
 TELEGRAM_SESSION = os.environ.get("TELEGRAM_SESSION")
@@ -139,12 +133,6 @@ try:
 except Exception as e:
     agentrouter_client = None
     logger.error("Failed to configure AgentRouter API: %s", e)
-
-try:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY) if genai and GEMINI_API_KEY else None
-except Exception as e:
-    gemini_client = None
-    logger.error("Failed to configure Gemini API: %s", e)
 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
@@ -1002,57 +990,11 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
 
-async def _gemini_input_from_message(message, prompt: str) -> list[dict]:
-    """Build Gemini Interactions input from text plus replied Telegram media."""
-    parts = [{"type": "text", "text": prompt}]
-    replied = message.reply_to_message if message else None
-    if not replied:
-        return parts
-
-    if replied.text:
-        parts[0]["text"] += f"\n\nPrevious bot/user message:\n{replied.text}"
-
-    media = None
-    media_type = None
-    mime_type = None
-    if replied.photo:
-        media = replied.photo[-1]
-        media_type, mime_type = "image", "image/jpeg"
-    elif replied.video:
-        media = replied.video
-        media_type, mime_type = "video", replied.video.mime_type or "video/mp4"
-    elif replied.animation:
-        media = replied.animation
-        media_type, mime_type = "video", "video/mp4"
-    elif replied.audio:
-        media = replied.audio
-        media_type, mime_type = "audio", replied.audio.mime_type or "audio/mpeg"
-    elif replied.voice:
-        media = replied.voice
-        media_type, mime_type = "audio", "audio/ogg"
-    elif replied.document and (replied.document.mime_type or "").startswith(("image/", "video/", "audio/", "application/pdf")):
-        media = replied.document
-        mime_type = replied.document.mime_type
-        media_type = "image" if mime_type.startswith("image/") else "video" if mime_type.startswith("video/") else "audio" if mime_type.startswith("audio/") else "document"
-
-    if media:
-        telegram_file = await media.get_file()
-        media_bytes = bytes(await telegram_file.download_as_bytearray())
-        if len(media_bytes) > 18 * 1024 * 1024:
-            raise ValueError("The replied media is too large. Please use an image/video/audio file under 18 MB.")
-        parts.append({
-            "type": media_type,
-            "data": base64.b64encode(media_bytes).decode("ascii"),
-            "mime_type": mime_type,
-        })
-    return parts
-
-
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
-    if not (ANTHROPIC_AUTH_TOKEN or agentrouter_client or (websocket and TERMUX_WS_URL)):
+    if not (websocket and TERMUX_WS_URL):
         await update.message.reply_text(
-            "AgentRouter is not configured. Add ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY and restart TG_TAG."
+            "Termux AI is not connected. Configure TERMUX_WS_URL and restart TG_TAG."
         )
         return
     prompt = " ".join(context.args).strip()
@@ -1068,16 +1010,13 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     feedback = await update.message.reply_text("Thinking with AgentRouter...")
     try:
-        if websocket and TERMUX_WS_URL and ANTHROPIC_AUTH_TOKEN and not agentrouter_client:
-            answer = await asyncio.to_thread(_ask_termux_ai_sync, prompt)
-        else:
-            answer = await _ask_agent_model(prompt)
+        answer = await asyncio.to_thread(_ask_termux_ai_sync, prompt)
         if not answer:
             raise RuntimeError("AgentRouter returned an empty response.")
         await feedback.edit_text(answer[:4090])
     except Exception as exc:
         logger.exception("AgentRouter /ai failed: %s", exc)
-        await feedback.edit_text(f"AgentRouter test failed: {str(exc)[:700]}")
+        await feedback.edit_text(f"Termux AI test failed: {str(exc)[:700]}")
 
 
 async def _get_telegram_user_client() -> TelegramClient:
@@ -1210,7 +1149,7 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
         "1. reply in original language (English translation). Match the tone, do not invent facts, "
         "and keep each suggestion concise.\n\n" + trigger_details + "\n\n" + "\n\n---\n\n".join(transcript)
     )
-    answer = await _ask_agent_model(instruction)
+    answer = await asyncio.to_thread(_ask_termux_ai_sync, instruction)
     suggestions = [line.strip() for line in answer.splitlines() if re.match(r"^\s*[1-5][.)]\s+", line)]
     suggestions = [re.sub(r"^\s*[1-5][.)]\s+", "", line).strip() for line in suggestions[:5]]
     rendered = "\n".join(f"{index}. {suggestion}" for index, suggestion in enumerate(suggestions, 1)) or answer[:3500]
@@ -1221,48 +1160,6 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
             for index, suggestion in enumerate(suggestions, 1)
         ])
     await bot.send_message(chat_id=admin_id, text=f"New message in {folder_name}:\n\n{rendered}", reply_markup=keyboard)
-
-
-async def _ask_agent_model(prompt: str) -> str:
-    """Use the configured Anthropic-compatible AgentRouter model for text requests."""
-    if ANTHROPIC_AUTH_TOKEN:
-        response = await asyncio.to_thread(
-            requests.post,
-            f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
-            headers={
-                "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",
-                "x-api-key": ANTHROPIC_AUTH_TOKEN,
-                "anthropic-version": "2023-06-01",
-                "User-Agent": "claude-cli/2.1.158 (external, sdk-cli)",
-                "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12",
-                "anthropic-dangerous-direct-browser-access": "true",
-                "x-app": "cli",
-                "Content-Type": "application/json",
-            },
-            json={"model": ANTHROPIC_MODEL, "max_tokens": 8192, "messages": [{"role": "user", "content": prompt}]},
-            timeout=300,
-        )
-        if not response.ok:
-            raise RuntimeError(f"AgentRouter error ({response.status_code}): {response.text[:700]}")
-        payload = response.json()
-        if payload.get("content"):
-            answer = "".join(block.get("text", "") for block in payload["content"] if block.get("type") == "text").strip()
-        else:
-            answer = payload.get("choices", [{}])[0].get("message", {}).get("content")
-        if answer:
-            return answer.strip()
-        raise RuntimeError("AgentRouter returned an empty response.")
-    if agentrouter_client:
-        response = await agentrouter_client.chat.completions.create(
-            model=AGENTROUTER_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=8192,
-            temperature=0.6,
-        )
-        answer = response.choices[0].message.content if response.choices else None
-        if answer:
-            return answer.strip()
-    raise RuntimeError("AgentRouter is not configured. Add ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY.")
 
 
 async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1321,8 +1218,8 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not selected:
         await update.message.reply_text("Select a folder first with /folder Folder Name.")
         return
-    if not (ANTHROPIC_AUTH_TOKEN or agentrouter_client):
-        await update.message.reply_text("AgentRouter is not configured. Add ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY and restart TG_TAG.")
+    if not (websocket and TERMUX_WS_URL):
+        await update.message.reply_text("Termux AI is not connected. Configure TERMUX_WS_URL and restart TG_TAG.")
         return
     feedback = await update.message.reply_text(f"Reading {selected[1]} and preparing five suggestions...")
     try:
