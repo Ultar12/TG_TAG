@@ -294,6 +294,13 @@ class VoiceProfile(Base):
     created_at = Column(String, nullable=False, default=lambda: datetime.datetime.utcnow().isoformat())
     updated_at = Column(String, nullable=False, default=lambda: datetime.datetime.utcnow().isoformat())
 
+class FolderSetting(Base):
+    __tablename__ = 'folder_settings'
+    user_id = Column(BigInteger, primary_key=True, nullable=False)
+    folder_id = Column(BigInteger, nullable=False)
+    folder_name = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False, default=lambda: datetime.datetime.utcnow().isoformat())
+
 engine_options = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False}
@@ -1186,6 +1193,44 @@ async def _install_folder_watcher(application) -> None:
     folder_watch_handler_installed = True
 
 
+def _save_folder_setting(user_id: int, folder_id: int, folder_name: str) -> None:
+    session = Session()
+    try:
+        setting = session.query(FolderSetting).filter_by(user_id=user_id).first()
+        if setting:
+            setting.folder_id = folder_id
+            setting.folder_name = folder_name
+            setting.updated_at = datetime.datetime.utcnow().isoformat()
+        else:
+            session.add(FolderSetting(user_id=user_id, folder_id=folder_id, folder_name=folder_name))
+        session.commit()
+    finally:
+        session.close()
+
+
+def _load_folder_setting(user_id: int):
+    session = Session()
+    try:
+        setting = session.query(FolderSetting).filter_by(user_id=user_id).first()
+        return (int(setting.folder_id), setting.folder_name) if setting else None
+    finally:
+        session.close()
+
+
+async def restore_folder_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Restore the admin's selected folder after a restart or redeploy."""
+    try:
+        selected = _load_folder_setting(ADMIN_ID)
+        if selected:
+            client = await _get_telegram_user_client()
+            folder_selections[ADMIN_ID] = selected
+            await _load_folder_dialog_ids(client, selected[0])
+            await _install_folder_watcher(context.application)
+            logger.info("Restored folder watcher for %s", selected[1])
+    except Exception:
+        logger.warning("Folder watcher could not be restored yet; configure the session and reselect the folder.", exc_info=True)
+
+
 async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, folder_id: int, trigger_message=None) -> None:
     client = await _get_telegram_user_client()
     ids = folder_dialog_ids.get(folder_id) or await _load_folder_dialog_ids(client, folder_id)
@@ -1244,6 +1289,7 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
             selected_title = folder_title(match)
             folder_selections[update.effective_user.id] = (int(match.id), selected_title)
+            _save_folder_setting(update.effective_user.id, int(match.id), selected_title)
             await _load_folder_dialog_ids(client, int(match.id))
             await _install_folder_watcher(context.application)
             await update.message.reply_text(f"Selected folder: {selected_title}\nAutomatic suggestions are now enabled. Use /suggest for a manual scan.")
@@ -3148,6 +3194,7 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice_sample))
     application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION | filters.Document.ALL, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
+    application.job_queue.run_once(restore_folder_watch, when=2, name="restore-folder-watch")
     
     port = int(os.environ.get("PORT", "10000"))
     webhook_base_url = (
