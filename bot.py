@@ -41,6 +41,7 @@ from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from session_generator import build_session_conversation, configure_session_conversation
 from telethon import TelegramClient
+from telethon import events
 from telethon.sessions import StringSession
 
 from sqlalchemy import create_engine, Column, String, text
@@ -94,6 +95,9 @@ TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH")
 TELEGRAM_SESSION = os.environ.get("TELEGRAM_SESSION")
 folder_selections: dict[int, tuple[int, str]] = {}
 telegram_user_client = None
+folder_watch_handler_installed = False
+folder_watch_cooldown: dict[int, float] = {}
+folder_dialog_ids: dict[int, set[int]] = {}
 
 # --- Initial Checks ---
 missing_required = [
@@ -1149,6 +1153,62 @@ async def _get_telegram_user_client() -> TelegramClient:
     return telegram_user_client
 
 
+async def _load_folder_dialog_ids(client: TelegramClient, folder_id: int) -> set[int]:
+    """Resolve a Telegram custom folder to dialog IDs without passing its ID to GetDialogsRequest."""
+    dialogs = await client.get_dialogs(limit=500)
+    ids = {int(dialog.id) for dialog in dialogs if getattr(dialog, "folder_id", None) == folder_id}
+    folder_dialog_ids[folder_id] = ids
+    return ids
+
+
+async def _install_folder_watcher(application) -> None:
+    global folder_watch_handler_installed
+    if folder_watch_handler_installed:
+        return
+    client = await _get_telegram_user_client()
+
+    async def on_new_message(event) -> None:
+        if not event.is_private and not event.is_group and not event.is_channel:
+            return
+        for admin_id, (folder_id, folder_name) in list(folder_selections.items()):
+            if time.time() - folder_watch_cooldown.get(admin_id, 0) < 20:
+                continue
+            ids = folder_dialog_ids.get(folder_id) or await _load_folder_dialog_ids(client, folder_id)
+            if event.chat_id not in ids:
+                continue
+            folder_watch_cooldown[admin_id] = time.time()
+            try:
+                await _generate_folder_suggestions(application.bot, admin_id, folder_name, folder_id, trigger_message=event.message)
+            except Exception:
+                logger.exception("Automatic folder suggestions failed")
+
+    client.add_event_handler(on_new_message, events.NewMessage(incoming=True))
+    folder_watch_handler_installed = True
+
+
+async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, folder_id: int, trigger_message=None) -> None:
+    client = await _get_telegram_user_client()
+    ids = folder_dialog_ids.get(folder_id) or await _load_folder_dialog_ids(client, folder_id)
+    transcript = []
+    if trigger_message:
+        transcript.append(f"NEW MESSAGE:\n{trigger_message.message or ''}")
+    dialogs = await client.get_dialogs(limit=500)
+    for dialog in [item for item in dialogs if int(item.id) in ids][:8]:
+        messages = [message async for message in client.iter_messages(dialog.entity, limit=6, reverse=True) if message.message]
+        if messages:
+            transcript.append(f"CHAT: {dialog.name}\n" + "\n".join(f"{m.sender_id}: {m.message}" for m in messages))
+    if not transcript:
+        raise RuntimeError("No readable text messages were found in that folder.")
+    instruction = (
+        "Analyze these Telegram conversations. For the most recent unanswered incoming message, "
+        "write exactly five distinct reply suggestions. Match the language of each conversation, "
+        "preserve tone, do not invent facts, and keep each suggestion concise. "
+        "Return only a numbered list from 1 to 5.\n\n" + "\n\n---\n\n".join(transcript)
+    )
+    interaction = await asyncio.to_thread(gemini_client.interactions.create, model=GEMINI_MODEL, input=instruction)
+    await bot.send_message(chat_id=admin_id, text=f"New message in {folder_name}:\n\n{interaction.output_text[:3900]}")
+
+
 async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """List Telegram chat folders or select one by name."""
     if update.effective_user.id != ADMIN_ID:
@@ -1184,7 +1244,9 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
             selected_title = folder_title(match)
             folder_selections[update.effective_user.id] = (int(match.id), selected_title)
-            await update.message.reply_text(f"Selected folder: {selected_title}\nUse /suggest to generate five replies.")
+            await _load_folder_dialog_ids(client, int(match.id))
+            await _install_folder_watcher(context.application)
+            await update.message.reply_text(f"Selected folder: {selected_title}\nAutomatic suggestions are now enabled. Use /suggest for a manual scan.")
             return
         names = "\n".join(f"• {folder_title(item)}" for item in folders)
         await update.message.reply_text(f"Your Telegram folders:\n{names}\n\nSelect one with:\n/folder Folder Name")
@@ -1208,25 +1270,8 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     feedback = await update.message.reply_text(f"Reading {selected[1]} and preparing five suggestions...")
     try:
         client = await _get_telegram_user_client()
-        dialogs = await client.get_dialogs(folder=selected[0], limit=20)
-        transcript = []
-        for dialog in dialogs[:8]:
-            messages = [message async for message in client.iter_messages(dialog.entity, limit=6, reverse=True) if message.message]
-            if messages:
-                transcript.append(f"CHAT: {dialog.name}\n" + "\n".join(f"{m.sender_id}: {m.message}" for m in messages))
-        if not transcript:
-            raise RuntimeError("No readable text messages were found in that folder.")
-        instruction = (
-            "Analyze these Telegram conversations. For the most recent unanswered incoming message, "
-            "write exactly five distinct reply suggestions. Match the language of each conversation, "
-            "preserve tone, do not invent facts, and keep each suggestion concise. "
-            "Return only a numbered list from 1 to 5.\n\n" + "\n\n---\n\n".join(transcript)
-        )
-        interaction = await asyncio.to_thread(
-            gemini_client.interactions.create, model=GEMINI_MODEL, input=instruction
-        )
-        answer = interaction.output_text.strip()
-        await feedback.edit_text(f"Suggestions for {selected[1]}:\n\n{answer[:3900]}")
+        await _generate_folder_suggestions(context.bot, update.effective_user.id, selected[1], selected[0])
+        await feedback.edit_text(f"Five suggestions for {selected[1]} were sent above.")
     except Exception as exc:
         logger.exception("Folder suggestions failed: %s", exc)
         await feedback.edit_text(f"Could not create suggestions: {str(exc)[:700]}")
