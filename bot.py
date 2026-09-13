@@ -17,6 +17,10 @@ except ImportError:
 from bs4 import BeautifulSoup
 import base64
 import openai # For DALL-E image creation
+try:
+    from google import genai
+except ImportError:
+    genai = None
 import pytesseract # For OCR
 from PIL import Image # For OCR
 import io # For OCR
@@ -80,6 +84,8 @@ ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/ai")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 # --- Initial Checks ---
 missing_required = [
@@ -121,6 +127,12 @@ try:
 except Exception as e:
     agentrouter_client = None
     logger.error("Failed to configure AgentRouter API: %s", e)
+
+try:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY) if genai and GEMINI_API_KEY else None
+except Exception as e:
+    gemini_client = None
+    logger.error("Failed to configure Gemini API: %s", e)
 
 # --- Constants & Database Setup ---
 DOWNLOAD_DIR = "downloads"
@@ -973,9 +985,9 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
-    if not websocket and not agentrouter_client and not ANTHROPIC_AUTH_TOKEN and not AGENTROUTER_API_KEY:
+    if not gemini_client:
         await update.message.reply_text(
-            "AgentRouter is not configured. Add AGENTROUTER_API_KEY or ANTHROPIC_AUTH_TOKEN and restart TG_TAG."
+            "Gemini is not configured. Add GEMINI_API_KEY and restart TG_TAG."
         )
         return
     prompt = " ".join(context.args).strip()
@@ -987,9 +999,16 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if len(prompt) > 4000:
         await update.message.reply_text("Please keep the test prompt under 4000 characters.")
         return
-    feedback = await update.message.reply_text("Thinking with AgentRouter...")
+    feedback = await update.message.reply_text("Thinking with Gemini...")
     try:
-        if websocket and TERMUX_WS_URL and (ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY):
+        if gemini_client:
+            interaction = await asyncio.to_thread(
+                gemini_client.interactions.create,
+                model=GEMINI_MODEL,
+                input=prompt,
+            )
+            answer = interaction.output_text
+        elif websocket and TERMUX_WS_URL and (ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY):
             answer = await asyncio.to_thread(_ask_termux_ai_sync, prompt)
         elif ANTHROPIC_AUTH_TOKEN:
             response = await asyncio.to_thread(
@@ -1055,7 +1074,7 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await feedback.edit_text(answer[:4090])
     except Exception as exc:
         logger.exception("AgentRouter /ai failed: %s", exc)
-        await feedback.edit_text(f"AgentRouter test failed: {str(exc)[:700]}")
+        await feedback.edit_text(f"Gemini test failed: {str(exc)[:700]}")
 
 def _ask_termux_ai_sync(prompt: str) -> str:
     """Send one AI request through the user's working Termux WebSocket worker."""

@@ -102,6 +102,15 @@
       "value": "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/ai",
       "required": false
     },
+    "GEMINI_API_KEY": {
+      "description": "Google Gemini API key used by the /ai command.",
+      "required": false
+    },
+    "GEMINI_MODEL": {
+      "description": "Gemini model used by /ai.",
+      "value": "gemini-3.8-flash",
+      "required": false
+    },
     "GMAIL_ADDRESS": {
       "description": "Optional Gmail address for the admin email feature.",
       "required": false
