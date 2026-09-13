@@ -1050,9 +1050,9 @@ async def _gemini_input_from_message(message, prompt: str) -> list[dict]:
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
-    if not gemini_client:
+    if not (ANTHROPIC_AUTH_TOKEN or agentrouter_client or (websocket and TERMUX_WS_URL)):
         await update.message.reply_text(
-            "Gemini is not configured. Add GEMINI_API_KEY and restart TG_TAG."
+            "AgentRouter is not configured. Add ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY and restart TG_TAG."
         )
         return
     prompt = " ".join(context.args).strip()
@@ -1066,83 +1066,18 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if len(prompt) > 4000:
         await update.message.reply_text("Please keep the test prompt under 4000 characters.")
         return
-    feedback = await update.message.reply_text("Thinking with Gemini...")
+    feedback = await update.message.reply_text("Thinking with AgentRouter...")
     try:
-        if gemini_client:
-            gemini_input = await _gemini_input_from_message(update.message, prompt)
-            interaction = await asyncio.to_thread(
-                gemini_client.interactions.create,
-                model=GEMINI_MODEL,
-                input=gemini_input,
-            )
-            answer = interaction.output_text
-        elif websocket and TERMUX_WS_URL and (ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY):
+        if websocket and TERMUX_WS_URL and ANTHROPIC_AUTH_TOKEN and not agentrouter_client:
             answer = await asyncio.to_thread(_ask_termux_ai_sync, prompt)
-        elif ANTHROPIC_AUTH_TOKEN:
-            response = await asyncio.to_thread(
-                requests.post,
-                f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
-                headers={
-                    "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",
-                    "x-api-key": ANTHROPIC_AUTH_TOKEN,
-                    "anthropic-version": "2023-06-01",
-                    "User-Agent": "claude-cli/2.1.158 (external, sdk-cli)",
-                    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12",
-                    "anthropic-dangerous-direct-browser-access": "true",
-                    "x-app": "cli",
-                    "X-Stainless-Lang": "node",
-                    "X-Stainless-Package-Version": "0.32.1",
-                    "X-Stainless-OS": "MacOS",
-                    "X-Stainless-Arch": "arm64",
-                    "X-Stainless-Runtime": "Node.js",
-                    "X-Stainless-Runtime-Version": "v18.19.0",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": ANTHROPIC_MODEL,
-                    "max_tokens": 8192,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=300,
-            )
-            if not response.ok:
-                raise RuntimeError(f"Anthropic gateway error ({response.status_code}): {response.text[:700]}")
-            try:
-                payload = response.json()
-            except ValueError:
-                content_type = response.headers.get("content-type", "unknown")
-                raise RuntimeError(
-                    f"AgentRouter returned non-JSON data (HTTP {response.status_code}, "
-                    f"content-type {content_type}): {response.text[:700]}"
-                )
-            if payload.get("content"):
-                answer = "".join(block.get("text", "") for block in payload["content"] if block.get("type") == "text").strip()
-            elif payload.get("choices"):
-                answer = payload["choices"][0].get("message", {}).get("content")
-            else:
-                answer = None
-        elif agentrouter_client:
-            response = await agentrouter_client.chat.completions.create(
-                model=AGENTROUTER_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Answer naturally and accurately in the language used by the user. Keep the response concise unless more detail is requested.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=1200,
-                temperature=0.6,
-            )
-            answer = response.choices[0].message.content if response.choices else None
         else:
-            raise RuntimeError("No compatible AgentRouter client is available. Install the anthropic package and configure a token.")
+            answer = await _ask_agent_model(prompt)
         if not answer:
             raise RuntimeError("AgentRouter returned an empty response.")
         await feedback.edit_text(answer[:4090])
     except Exception as exc:
         logger.exception("AgentRouter /ai failed: %s", exc)
-        await feedback.edit_text(f"Gemini test failed: {str(exc)[:700]}")
+        await feedback.edit_text(f"AgentRouter test failed: {str(exc)[:700]}")
 
 
 async def _get_telegram_user_client() -> TelegramClient:
@@ -1275,8 +1210,7 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
         "1. reply in original language (English translation). Match the tone, do not invent facts, "
         "and keep each suggestion concise.\n\n" + trigger_details + "\n\n" + "\n\n---\n\n".join(transcript)
     )
-    interaction = await asyncio.to_thread(gemini_client.interactions.create, model=GEMINI_MODEL, input=instruction)
-    answer = interaction.output_text.strip()
+    answer = await _ask_agent_model(instruction)
     suggestions = [line.strip() for line in answer.splitlines() if re.match(r"^\s*[1-5][.)]\s+", line)]
     suggestions = [re.sub(r"^\s*[1-5][.)]\s+", "", line).strip() for line in suggestions[:5]]
     rendered = "\n".join(f"{index}. {suggestion}" for index, suggestion in enumerate(suggestions, 1)) or answer[:3500]
@@ -1287,6 +1221,48 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
             for index, suggestion in enumerate(suggestions, 1)
         ])
     await bot.send_message(chat_id=admin_id, text=f"New message in {folder_name}:\n\n{rendered}", reply_markup=keyboard)
+
+
+async def _ask_agent_model(prompt: str) -> str:
+    """Use the configured Anthropic-compatible AgentRouter model for text requests."""
+    if ANTHROPIC_AUTH_TOKEN:
+        response = await asyncio.to_thread(
+            requests.post,
+            f"{ANTHROPIC_BASE_URL.rstrip('/')}/v1/messages",
+            headers={
+                "Authorization": f"Bearer {ANTHROPIC_AUTH_TOKEN}",
+                "x-api-key": ANTHROPIC_AUTH_TOKEN,
+                "anthropic-version": "2023-06-01",
+                "User-Agent": "claude-cli/2.1.158 (external, sdk-cli)",
+                "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24,redact-thinking-2026-02-12",
+                "anthropic-dangerous-direct-browser-access": "true",
+                "x-app": "cli",
+                "Content-Type": "application/json",
+            },
+            json={"model": ANTHROPIC_MODEL, "max_tokens": 8192, "messages": [{"role": "user", "content": prompt}]},
+            timeout=300,
+        )
+        if not response.ok:
+            raise RuntimeError(f"AgentRouter error ({response.status_code}): {response.text[:700]}")
+        payload = response.json()
+        if payload.get("content"):
+            answer = "".join(block.get("text", "") for block in payload["content"] if block.get("type") == "text").strip()
+        else:
+            answer = payload.get("choices", [{}])[0].get("message", {}).get("content")
+        if answer:
+            return answer.strip()
+        raise RuntimeError("AgentRouter returned an empty response.")
+    if agentrouter_client:
+        response = await agentrouter_client.chat.completions.create(
+            model=AGENTROUTER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=8192,
+            temperature=0.6,
+        )
+        answer = response.choices[0].message.content if response.choices else None
+        if answer:
+            return answer.strip()
+    raise RuntimeError("AgentRouter is not configured. Add ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY.")
 
 
 async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1345,8 +1321,8 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not selected:
         await update.message.reply_text("Select a folder first with /folder Folder Name.")
         return
-    if not gemini_client:
-        await update.message.reply_text("Gemini is not configured. Add GEMINI_API_KEY and restart TG_TAG.")
+    if not (ANTHROPIC_AUTH_TOKEN or agentrouter_client):
+        await update.message.reply_text("AgentRouter is not configured. Add ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY and restart TG_TAG.")
         return
     feedback = await update.message.reply_text(f"Reading {selected[1]} and preparing five suggestions...")
     try:
