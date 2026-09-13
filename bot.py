@@ -35,7 +35,7 @@ import random
 import subprocess # For running the Node.js script
 import datetime # For the recurring email job
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, CopyTextButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, AIORateLimiter, JobQueue
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
@@ -1193,7 +1193,7 @@ async def _install_folder_watcher(application) -> None:
         if not event.is_private and not event.is_group and not event.is_channel:
             return
         for admin_id, (folder_id, folder_name) in list(folder_selections.items()):
-            if time.time() - folder_watch_cooldown.get(admin_id, 0) < 20:
+            if time.time() - folder_watch_cooldown.get(admin_id, 0) < 3:
                 continue
             ids = folder_dialog_ids.get(folder_id) or await _load_folder_dialog_ids(client, folder_id)
             if event.chat_id not in ids:
@@ -1250,8 +1250,15 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
     client = await _get_telegram_user_client()
     ids = folder_dialog_ids.get(folder_id) or await _load_folder_dialog_ids(client, folder_id)
     transcript = []
+    trigger_details = ""
     if trigger_message:
-        transcript.append(f"NEW MESSAGE:\n{trigger_message.message or ''}")
+        sender = await trigger_message.get_sender()
+        sender_name = "Unknown sender"
+        if sender:
+            sender_name = " ".join(filter(None, [getattr(sender, "first_name", None), getattr(sender, "last_name", None)])) or getattr(sender, "title", None) or getattr(sender, "username", None) or sender_name
+        trigger_text = trigger_message.message or "[non-text message]"
+        trigger_details = f"\n\nLATEST INCOMING MESSAGE\nSENDER: {sender_name}\nMESSAGE: {trigger_text}\n"
+        transcript.append(f"NEW MESSAGE FROM {sender_name}:\n{trigger_text}")
     dialogs = await client.get_dialogs(limit=500)
     for dialog in [item for item in dialogs if int(item.id) in ids][:8]:
         messages = [message async for message in client.iter_messages(dialog.entity, limit=6, reverse=True) if message.message]
@@ -1261,12 +1268,25 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
         raise RuntimeError("No readable text messages were found in that folder.")
     instruction = (
         "Analyze these Telegram conversations. For the most recent unanswered incoming message, "
-        "write exactly five distinct reply suggestions. Match the language of each conversation, "
-        "preserve tone, do not invent facts, and keep each suggestion concise. "
-        "Return only a numbered list from 1 to 5.\n\n" + "\n\n---\n\n".join(transcript)
+        "write exactly five distinct reply suggestions for the latest incoming message. "
+        "First translate the incoming message to English. Then write each suggestion in the "
+        "same language as the incoming message followed immediately by its English translation "
+        "in parentheses. Return only five numbered single-line items in this exact format: "
+        "1. reply in original language (English translation). Match the tone, do not invent facts, "
+        "and keep each suggestion concise.\n\n" + trigger_details + "\n\n" + "\n\n---\n\n".join(transcript)
     )
     interaction = await asyncio.to_thread(gemini_client.interactions.create, model=GEMINI_MODEL, input=instruction)
-    await bot.send_message(chat_id=admin_id, text=f"New message in {folder_name}:\n\n{interaction.output_text[:3900]}")
+    answer = interaction.output_text.strip()
+    suggestions = [line.strip() for line in answer.splitlines() if re.match(r"^\s*[1-5][.)]\s+", line)]
+    suggestions = [re.sub(r"^\s*[1-5][.)]\s+", "", line).strip() for line in suggestions[:5]]
+    rendered = "\n".join(f"{index}. {suggestion}" for index, suggestion in enumerate(suggestions, 1)) or answer[:3500]
+    keyboard = None
+    if suggestions:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Copy {index}", copy_text=CopyTextButton(text=suggestion))]
+            for index, suggestion in enumerate(suggestions, 1)
+        ])
+    await bot.send_message(chat_id=admin_id, text=f"New message in {folder_name}:\n\n{rendered}", reply_markup=keyboard)
 
 
 async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
