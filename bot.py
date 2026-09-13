@@ -983,6 +983,52 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
 
+async def _gemini_input_from_message(message, prompt: str) -> list[dict]:
+    """Build Gemini Interactions input from text plus replied Telegram media."""
+    parts = [{"type": "text", "text": prompt}]
+    replied = message.reply_to_message if message else None
+    if not replied:
+        return parts
+
+    if replied.text:
+        parts[0]["text"] += f"\n\nPrevious bot/user message:\n{replied.text}"
+
+    media = None
+    media_type = None
+    mime_type = None
+    if replied.photo:
+        media = replied.photo[-1]
+        media_type, mime_type = "image", "image/jpeg"
+    elif replied.video:
+        media = replied.video
+        media_type, mime_type = "video", replied.video.mime_type or "video/mp4"
+    elif replied.animation:
+        media = replied.animation
+        media_type, mime_type = "video", "video/mp4"
+    elif replied.audio:
+        media = replied.audio
+        media_type, mime_type = "audio", replied.audio.mime_type or "audio/mpeg"
+    elif replied.voice:
+        media = replied.voice
+        media_type, mime_type = "audio", "audio/ogg"
+    elif replied.document and (replied.document.mime_type or "").startswith(("image/", "video/", "audio/", "application/pdf")):
+        media = replied.document
+        mime_type = replied.document.mime_type
+        media_type = "image" if mime_type.startswith("image/") else "video" if mime_type.startswith("video/") else "audio" if mime_type.startswith("audio/") else "document"
+
+    if media:
+        telegram_file = await media.get_file()
+        media_bytes = bytes(await telegram_file.download_as_bytearray())
+        if len(media_bytes) > 18 * 1024 * 1024:
+            raise ValueError("The replied media is too large. Please use an image/video/audio file under 18 MB.")
+        parts.append({
+            "type": media_type,
+            "data": base64.b64encode(media_bytes).decode("ascii"),
+            "mime_type": mime_type,
+        })
+    return parts
+
+
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
     if not gemini_client:
@@ -993,6 +1039,8 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     prompt = " ".join(context.args).strip()
     if not prompt and update.message.reply_to_message and update.message.reply_to_message.text:
         prompt = update.message.reply_to_message.text.strip()
+    if not prompt and update.message.reply_to_message:
+        prompt = "Analyze the media I replied to and describe the important details."
     if not prompt:
         await update.message.reply_text("Usage: /ai <your question> — or reply to a text message with /ai")
         return
@@ -1002,10 +1050,11 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     feedback = await update.message.reply_text("Thinking with Gemini...")
     try:
         if gemini_client:
+            gemini_input = await _gemini_input_from_message(update.message, prompt)
             interaction = await asyncio.to_thread(
                 gemini_client.interactions.create,
                 model=GEMINI_MODEL,
-                input=prompt,
+                input=gemini_input,
             )
             answer = interaction.output_text
         elif websocket and TERMUX_WS_URL and (ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY):
