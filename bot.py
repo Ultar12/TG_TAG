@@ -84,6 +84,12 @@ ANTHROPIC_AUTH_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://agentrouter.org")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 TERMUX_WS_URL = os.environ.get("TERMUX_WS_URL", "wss://tg-tag-tls-e186af-927ae3e2c282.herokuapp.com/ai")
+TERMUX_AI_MODELS = [
+    item.strip() for item in os.environ.get(
+        "TERMUX_AI_MODELS",
+        "claude-opus-5,close-work-4-8,close-work-5,deepseek-v4-flash,glm-5.3,gpt-5.6-sol,gpt-6-astra",
+    ).split(",") if item.strip()
+]
 TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH")
 TELEGRAM_SESSION = os.environ.get("TELEGRAM_SESSION")
@@ -1008,9 +1014,9 @@ async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if len(prompt) > 4000:
         await update.message.reply_text("Please keep the test prompt under 4000 characters.")
         return
-    feedback = await update.message.reply_text("Thinking with AgentRouter...")
+    feedback = await update.message.reply_text("Thinking with Termux AI...")
     try:
-        answer = await asyncio.to_thread(_ask_termux_ai_sync, prompt)
+        answer = await asyncio.to_thread(_ask_termux_ai_with_fallback, prompt)
         if not answer:
             raise RuntimeError("AgentRouter returned an empty response.")
         await feedback.edit_text(answer[:4090])
@@ -1149,7 +1155,7 @@ async def _generate_folder_suggestions(bot, admin_id: int, folder_name: str, fol
         "1. reply in original language (English translation). Match the tone, do not invent facts, "
         "and keep each suggestion concise.\n\n" + trigger_details + "\n\n" + "\n\n---\n\n".join(transcript)
     )
-    answer = await asyncio.to_thread(_ask_termux_ai_sync, instruction)
+    answer = await asyncio.to_thread(_ask_termux_ai_with_fallback, instruction)
     suggestions = [line.strip() for line in answer.splitlines() if re.match(r"^\s*[1-5][.)]\s+", line)]
     suggestions = [re.sub(r"^\s*[1-5][.)]\s+", "", line).strip() for line in suggestions[:5]]
     rendered = "\n".join(f"{index}. {suggestion}" for index, suggestion in enumerate(suggestions, 1)) or answer[:3500]
@@ -1230,7 +1236,7 @@ async def suggest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.exception("Folder suggestions failed: %s", exc)
         await feedback.edit_text(f"Could not create suggestions: {str(exc)[:700]}")
 
-def _ask_termux_ai_sync(prompt: str) -> str:
+def _ask_termux_ai_sync(prompt: str, model: str | None = None) -> str:
     """Send one AI request through the user's working Termux WebSocket worker."""
     if not websocket:
         raise RuntimeError("The websocket-client package is not installed.")
@@ -1242,6 +1248,7 @@ def _ask_termux_ai_sync(prompt: str) -> str:
             "action": "ai_prompt",
             "reqId": request_id,
             "prompt": prompt,
+            "model": model or (TERMUX_AI_MODELS[0] if TERMUX_AI_MODELS else ANTHROPIC_MODEL),
             "apiKey": ANTHROPIC_AUTH_TOKEN or AGENTROUTER_API_KEY,
         }))
         deadline = time.time() + 320
@@ -1265,6 +1272,22 @@ def _ask_termux_ai_sync(prompt: str) -> str:
     finally:
         if ws:
             ws.close()
+
+
+def _ask_termux_ai_with_fallback(prompt: str) -> str:
+    """Retry the Termux worker with alternate models when a pool quota is exhausted."""
+    errors = []
+    for model in TERMUX_AI_MODELS:
+        try:
+            return _ask_termux_ai_sync(prompt, model=model)
+        except RuntimeError as exc:
+            error = str(exc)
+            errors.append(f"{model}: {error}")
+            lowered = error.casefold()
+            if "quota" not in lowered and "budget pool" not in lowered and "exhausted" not in lowered:
+                raise
+            logger.warning("Termux model %s quota unavailable; trying the next model.", model)
+    raise RuntimeError("All Termux AI models were unavailable due to quota limits.\n" + "\n".join(errors))
 
 def _elevenlabs_headers() -> dict:
     if not ELEVENLABS_API_KEY:
