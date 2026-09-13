@@ -40,7 +40,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from session_generator import build_session_conversation, configure_session_conversation
-from telethon import TelegramClient
+from telethon import TelegramClient, utils
 from telethon import events
 from telethon.sessions import StringSession
 
@@ -1164,6 +1164,21 @@ async def _load_folder_dialog_ids(client: TelegramClient, folder_id: int) -> set
     """Resolve a Telegram custom folder to dialog IDs without passing its ID to GetDialogsRequest."""
     dialogs = await client.get_dialogs(limit=500)
     ids = {int(dialog.id) for dialog in dialogs if getattr(dialog, "folder_id", None) == folder_id}
+    from telethon.tl.functions.messages import GetDialogFiltersRequest
+    filters_result = await client(GetDialogFiltersRequest())
+    raw_folders = getattr(filters_result, "filters", filters_result)
+    selected_filter = next((item for item in raw_folders if int(getattr(item, "id", -1)) == folder_id), None)
+    if selected_filter:
+        for peer in getattr(selected_filter, "include_peers", []) or []:
+            try:
+                ids.add(int(utils.get_peer_id(peer)))
+            except (TypeError, ValueError):
+                logger.debug("Could not resolve folder peer %r", peer, exc_info=True)
+        for peer in getattr(selected_filter, "exclude_peers", []) or []:
+            try:
+                ids.discard(int(utils.get_peer_id(peer)))
+            except (TypeError, ValueError):
+                pass
     folder_dialog_ids[folder_id] = ids
     return ids
 
