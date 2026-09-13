@@ -10,6 +10,7 @@ import shutil
 import time
 import requests
 import json
+import ast
 try:
     import websocket
 except ImportError:
@@ -1161,7 +1162,16 @@ async def folder_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         folders = [item for item in raw_folders if getattr(item, "title", None)]
         def folder_title(item) -> str:
             title = getattr(item, "title", "")
-            return str(getattr(title, "text", title)).strip()
+            value = getattr(title, "text", title)
+            value = str(value).strip()
+            if value.startswith("TextWithEntities("):
+                match = re.search(r"text=(.*?), entities=\[\]", value)
+                if match:
+                    try:
+                        value = str(ast.literal_eval(match.group(1))).strip()
+                    except (ValueError, SyntaxError):
+                        pass
+            return value
         if not folders:
             await update.message.reply_text("No Telegram chat folders were found.")
             return
