@@ -343,6 +343,7 @@ async def send_notification_to_admin(context: ContextTypes.DEFAULT_TYPE, user_in
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [KeyboardButton("AI Tools"), KeyboardButton("Media Tools")],
+        [KeyboardButton("/language"), KeyboardButton("/ytsearch")],
         [KeyboardButton("Help")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1905,7 +1906,13 @@ async def youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE, qu
     if not query:
         query = " ".join(context.args)
         if not query:
-            await update.message.reply_text("Please provide a search term.")
+            await prompt_for_input(
+                update,
+                context,
+                state="awaiting_ytsearch_query",
+                message="What should I search for on YouTube?",
+                event="Used /ytsearch",
+            )
             return
     feedback = await update.message.reply_text(f"Searching YouTube for '{query}'...")
     try:
