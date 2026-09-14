@@ -1030,7 +1030,16 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
         await feedback.delete()
     except Exception as e:
         logger.error(f"gTTS Error: {e}")
-        await feedback.edit_text("Sorry, an error occurred while generating the audio.")
+        detail = str(e)
+        if "401" in detail or "unauthorized" in detail.lower():
+            message = "ElevenLabs rejected the API key. Check ELEVENLABS_API_KEY in Heroku Config Vars."
+        elif "quota" in detail.lower() or "character" in detail.lower() and "limit" in detail.lower():
+            message = "ElevenLabs character quota has been reached. Check the remaining free-plan quota."
+        elif "voice_not_found" in detail.lower() or "voice" in detail.lower() and "not found" in detail.lower():
+            message = "The ElevenLabs voice ID was not found. Set ELEVENLABS_VOICE_ID to an available premade voice ID."
+        else:
+            message = f"Text-to-speech failed: {detail[:500]}"
+        await feedback.edit_text(message)
     finally:
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
