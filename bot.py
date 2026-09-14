@@ -1002,6 +1002,7 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
     feedback = await update.message.reply_text("Generating audio...")
     temp_audio_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}.mp3")
     try:
+        language_id = voice_language_preferences.get(update.effective_user.id, "en")
         if ELEVENLABS_API_KEY:
             response = await asyncio.to_thread(
                 requests.post,
@@ -1020,11 +1021,16 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
                 timeout=180,
             )
             if not response.ok:
-                raise RuntimeError(f"ElevenLabs TTS failed ({response.status_code}): {response.text[:300]}")
+                if response.status_code == 402 and "paid_plan_required" in response.text:
+                    await asyncio.to_thread(gTTS(text=text, lang=language_id).save, temp_audio_path)
+                else:
+                    raise RuntimeError(f"ElevenLabs TTS failed ({response.status_code}): {response.text[:300]}")
+        else:
+            await asyncio.to_thread(gTTS(text=text, lang=language_id).save, temp_audio_path)
+
+        if not os.path.isfile(temp_audio_path):
             with open(temp_audio_path, "wb") as audio_file:
                 audio_file.write(response.content)
-        else:
-            await asyncio.to_thread(gTTS(text=text, lang='en').save, temp_audio_path)
         with open(temp_audio_path, 'rb') as f:
             await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title="Multilingual text to speech")
         await feedback.delete()
