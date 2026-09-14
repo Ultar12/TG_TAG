@@ -1569,13 +1569,24 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def handle_voice_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
-    language_id = query.data.split(":", 1)[1]
-    if language_id not in VOICE_LANGUAGES:
-        await query.edit_message_text("That language is not available.")
-        return
-    voice_language_preferences[query.from_user.id] = language_id
-    await query.edit_message_text(f"Voice language set to {VOICE_LANGUAGES[language_id]}.")
+    try:
+        await query.answer()
+        language_id = query.data.split(":", 1)[1]
+        if language_id not in VOICE_LANGUAGES:
+            await query.edit_message_text("That language is not available.")
+            return
+        voice_language_preferences[query.from_user.id] = language_id
+        confirmation = f"Voice language set to {VOICE_LANGUAGES[language_id]}."
+        try:
+            await query.edit_message_text(confirmation)
+        except Exception:
+            await context.bot.send_message(query.message.chat_id, confirmation)
+    except Exception as exc:
+        logger.exception("Language selection failed: %s", exc)
+        try:
+            await context.bot.send_message(query.message.chat_id, f"Language selection failed: {str(exc)[:300]}")
+        except Exception:
+            pass
 
 async def cloned_voice_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     if len(text) > VOICE_TEXT_MAX_CHARS:
@@ -1877,6 +1888,17 @@ async def handle_tiktok_count_selection(update: Update, context: ContextTypes.DE
         
 # --- END NEW TikTok Search Functions ---
 
+def _youtube_search_sync(search_query: str) -> list[dict]:
+    ydl_opts = {
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        **YTDL_COMMON_OPTIONS,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch5:{search_query}", download=False)
+    return [entry for entry in (info or {}).get("entries", []) if entry and entry.get("id")]
+
 async def youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str = None) -> None:
     if not query:
         query = " ".join(context.args)
@@ -1885,19 +1907,7 @@ async def youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE, qu
             return
     feedback = await update.message.reply_text(f"Searching YouTube for '{query}'...")
     try:
-        # --- YOUTUBE SEARCH FIX APPLIED HERE: Using cookies is the best solution ---
-        ydl_opts = {
-            'noplaylist': True, 
-            'quiet': True, 
-            'default_search': 'ytsearch5',
-            'ignoreerrors': True, # Keep to ignore soft errors
-            **YTDL_COMMON_OPTIONS,
-        }
-        # --- END FIX ---
-        search_query = query if query.startswith(("ytsearch", "https://", "http://")) else f"ytsearch5:{query}"
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, search_query, download=False)
-        entries = [entry for entry in (info or {}).get('entries', []) if entry and entry.get('id')]
+        entries = await asyncio.wait_for(asyncio.to_thread(_youtube_search_sync, query), timeout=45)
         if not entries:
             await feedback.edit_text("Sorry, couldn't find any results or YouTube blocked the search request. If this continues, check your `cookies_youtube.txt` file.")
             return
