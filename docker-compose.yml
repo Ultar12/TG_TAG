@@ -1,0 +1,49 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      VOICE_ENGINE_URL: http://voice-engine:8000
+      VOICE_ENGINE_TOKEN: ${VOICE_ENGINE_TOKEN}
+    depends_on:
+      voice-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - bot-downloads:/app/downloads
+
+  voice-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+    environment:
+      VOICE_ENGINE_TOKEN: ${VOICE_ENGINE_TOKEN}
+      VOICE_DEVICE: cuda
+      CHATTERBOX_MODEL_VERSION: v3
+      VOICE_LANGUAGE_ID: ${VOICE_LANGUAGE_ID:-en}
+      HF_HOME: /cache/huggingface
+    expose:
+      - "8000"
+    restart: unless-stopped
+    volumes:
+      - voice-data:/data/voices
+      - huggingface-cache:/cache/huggingface
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  bot-downloads:
+  voice-data:
+  huggingface-cache:

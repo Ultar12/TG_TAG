@@ -30,6 +30,7 @@ from gtts import gTTS
 import random
 import subprocess # For running the Node.js script
 import datetime # For the recurring email job
+import signal
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, CopyTextButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler, AIORateLimiter, JobQueue
@@ -75,8 +76,8 @@ STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 SCREENSHOT_API_KEY = os.environ.get("SCREENSHOT_API_KEY")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-ELEVENLABS_TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
+VOICE_ENGINE_URL = os.environ.get("VOICE_ENGINE_URL", "http://voice-engine:8000").rstrip("/")
+VOICE_ENGINE_TOKEN = os.environ.get("VOICE_ENGINE_TOKEN", "")
 AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
 AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
 AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
@@ -145,6 +146,14 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 VOICE_SAMPLE_MAX_SECONDS = 120
 VOICE_TEXT_MAX_CHARS = 2500
+VOICE_LANGUAGES = {
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German",
+    "it": "Italian", "pt": "Portuguese", "ar": "Arabic", "hi": "Hindi",
+    "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
+}
+voice_language_preferences: dict[int, str] = {}
+LIVE_MAX_MINUTES = int(os.environ.get("LIVE_MAX_MINUTES", "180"))
+live_recording_tasks: dict[int, asyncio.Task] = {}
 # Prefer the configured path, then use the repository's supported cookie file.
 configured_cookie_file = os.environ.get("YTDL_COOKIES_FILE")
 cookie_candidates = [configured_cookie_file, "cookies_youtube.txt"]
@@ -1289,52 +1298,39 @@ def _ask_termux_ai_with_fallback(prompt: str) -> str:
             logger.warning("Termux model %s quota unavailable; trying the next model.", model)
     raise RuntimeError("All Termux AI models were unavailable due to quota limits.\n" + "\n".join(errors))
 
-def _elevenlabs_headers() -> dict:
-    if not ELEVENLABS_API_KEY:
-        raise RuntimeError("ELEVENLABS_API_KEY is not configured.")
-    return {"xi-api-key": ELEVENLABS_API_KEY, "Accept": "application/json"}
-
+def _voice_engine_headers() -> dict:
+    headers = {"Accept": "application/json"}
+    if VOICE_ENGINE_TOKEN:
+        headers["X-Voice-Engine-Token"] = VOICE_ENGINE_TOKEN
+    return headers
 def _clone_voice_sync(sample_path: str, voice_name: str) -> str:
+    del voice_name
     with open(sample_path, "rb") as sample:
         response = requests.post(
-            "https://api.elevenlabs.io/v1/voices/add",
-            headers=_elevenlabs_headers(),
-            data={
-                "name": voice_name,
-                "description": "User-provided voice sample with consent",
-                "remove_background_noise": "true",
-                "labels": json.dumps({"source": "telegram", "consent": "confirmed"}),
-            },
-            files={"files": (os.path.basename(sample_path), sample, "audio/mpeg")},
+            f"{VOICE_ENGINE_URL}/clone",
+            headers=_voice_engine_headers(),
+            files={"sample": (os.path.basename(sample_path), sample, "audio/mpeg")},
             timeout=180,
         )
     if not response.ok:
-        raise RuntimeError(f"Voice cloning failed ({response.status_code}): {response.text[:300]}")
+        raise RuntimeError(f"Local voice cloning failed ({response.status_code}): {response.text[:300]}")
     voice_id = response.json().get("voice_id")
     if not voice_id:
-        raise RuntimeError("Voice cloning service returned no voice ID.")
+        raise RuntimeError("Local voice engine returned no voice ID.")
     return voice_id
-
-def _synthesize_voice_sync(voice_id: str, text: str, output_path: str) -> None:
+def _synthesize_voice_sync(voice_id: str, text: str, output_path: str, language_id: str) -> None:
     response = requests.post(
-        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128",
-        headers={**_elevenlabs_headers(), "Content-Type": "application/json"},
-        json={
-            "text": text,
-            "model_id": ELEVENLABS_TTS_MODEL,
-            "voice_settings": {"stability": 0.48, "similarity_boost": 0.86, "style": 0.18, "use_speaker_boost": True},
-        },
+        f"{VOICE_ENGINE_URL}/synthesize",
+        headers={**_voice_engine_headers(), "Content-Type": "application/json"},
+        json={"voice_id": voice_id, "text": text, "language_id": language_id},
         timeout=180,
     )
     if not response.ok:
-        raise RuntimeError(f"Voice generation failed ({response.status_code}): {response.text[:300]}")
+        raise RuntimeError(f"Local voice generation failed ({response.status_code}): {response.text[:300]}")
     with open(output_path, "wb") as output:
         output.write(response.content)
 
 async def clone_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ELEVENLABS_API_KEY:
-        await update.message.reply_text("Voice cloning is not configured yet. Add ELEVENLABS_API_KEY to the bot environment.")
-        return
     replied = update.message.reply_to_message
     replied_media = replied and (replied.voice or replied.audio or replied.video or replied.document)
     if replied_media:
@@ -1430,7 +1426,7 @@ async def handle_voice_consent(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(query.message.chat_id, "Voice profile created. Now send the text you want spoken.")
     except Exception as exc:
         logger.exception("Voice cloning failed: %s", exc)
-        detail = str(exc).replace("ELEVENLABS_API_KEY", "ElevenLabs API key")[:500]
+        detail = str(exc)[:500]
         await context.bot.send_message(
             query.message.chat_id,
             "I could not create the voice profile.\n\n"+
@@ -1439,6 +1435,27 @@ async def handle_voice_consent(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     finally:
         shutil.rmtree(os.path.dirname(sample_path), ignore_errors=True)
+
+async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    current = voice_language_preferences.get(update.effective_user.id, "en")
+    keyboard = [
+        [InlineKeyboardButton(label, callback_data=f"voice_lang:{code}")]
+        for code, label in VOICE_LANGUAGES.items()
+    ]
+    await update.message.reply_text(
+        f"Choose the language for your cloned voice. Current: {VOICE_LANGUAGES[current]}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+async def handle_voice_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    language_id = query.data.split(":", 1)[1]
+    if language_id not in VOICE_LANGUAGES:
+        await query.edit_message_text("That language is not available.")
+        return
+    voice_language_preferences[query.from_user.id] = language_id
+    await query.edit_message_text(f"Voice language set to {VOICE_LANGUAGES[language_id]}.")
 
 async def cloned_voice_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     if len(text) > VOICE_TEXT_MAX_CHARS:
@@ -1460,8 +1477,9 @@ async def cloned_voice_text_command(update: Update, context: ContextTypes.DEFAUL
     os.makedirs(temp_dir, exist_ok=True)
     mp3_path = os.path.join(temp_dir, "speech.mp3")
     ogg_path = os.path.join(temp_dir, "speech.ogg")
+    language_id = voice_language_preferences.get(update.effective_user.id, "en")
     try:
-        await asyncio.to_thread(_synthesize_voice_sync, voice_id, text, mp3_path)
+        await asyncio.to_thread(_synthesize_voice_sync, voice_id, text, mp3_path, language_id)
         convert = await asyncio.create_subprocess_exec("ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", mp3_path, "-c:a", "libopus", "-b:a", "64k", ogg_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _, stderr = await convert.communicate()
         if convert.returncode != 0:
@@ -1476,7 +1494,7 @@ async def cloned_voice_text_command(update: Update, context: ContextTypes.DEFAUL
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate a voice note from the saved clone; ElevenLabs detects supported languages automatically."""
+    """Generate a voice note using the self-hosted Chatterbox engine."""
     text = " ".join(context.args).strip()
     if not text and update.message.reply_to_message and update.message.reply_to_message.text:
         text = update.message.reply_to_message.text.strip()
@@ -1484,6 +1502,156 @@ async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Usage: /voice <text> — or reply to a text message with /voice")
         return
     await cloned_voice_text_command(update, context, text)
+
+async def channel_playlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Usage: /playlist <YouTube channel URL or @handle> [count]")
+        return
+    channel = context.args[0]
+    if channel.startswith("@"):
+        channel = f"https://www.youtube.com/{channel}/videos"
+    if not channel.startswith(("https://www.youtube.com/", "https://youtube.com/")):
+        await update.message.reply_text("Please provide a YouTube channel URL or @handle.")
+        return
+    try:
+        count = min(max(int(context.args[1]), 1), 50) if len(context.args) > 1 else 10
+    except ValueError:
+        await update.message.reply_text("Count must be a number between 1 and 50.")
+        return
+    feedback = await update.message.reply_text("Reading the channel playlist...")
+    try:
+        ydl_opts = {
+            "extract_flat": "in_playlist",
+            "playlistend": count,
+            "skip_download": True,
+            "quiet": True,
+            "ignoreerrors": True,
+            **YTDL_COMMON_OPTIONS,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = await asyncio.to_thread(ydl.extract_info, channel, download=False)
+        entries = [entry for entry in (info or {}).get("entries", []) if entry and entry.get("id")]
+        if not entries:
+            await feedback.edit_text("No videos found. Try the channel's /videos URL or check YouTube cookies.")
+            return
+        title = (info or {}).get("title") or channel
+        lines = [f"Playlist for {title} (showing {len(entries)}):", ""]
+        for index, entry in enumerate(entries, 1):
+            video_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={entry['id']}"
+            safe_title = str(entry.get("title") or "Untitled").replace("[", "\\[").replace("]", "\\]")
+            lines.append(f"{index}. [{safe_title}]({video_url})")
+        message = "\n".join(lines)
+        await feedback.edit_text(message[:4000], parse_mode=ParseMode.MARKDOWN)
+    except Exception as exc:
+        logger.exception("Channel playlist error: %s", exc)
+        await feedback.edit_text("Could not read that channel playlist. Check the URL and try again.")
+
+async def _record_live_job(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, duration_minutes: int | None, from_start: bool) -> None:
+    chat_id = update.effective_chat.id
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"live_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    output_template = os.path.join(temp_dir, "recording.%(ext)s")
+    args = [
+        "yt-dlp", "--no-playlist", "--newline", "--merge-output-format", "mp4",
+        "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "-o", output_template,
+    ]
+    if from_start:
+        args.append("--live-from-start")
+    args.append(url)
+    process = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        timeout = duration_minutes * 60 if duration_minutes else LIVE_MAX_MINUTES * 60
+        try:
+            await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            process.send_signal(signal.SIGINT)
+            try:
+                await asyncio.wait_for(process.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+        files = [
+            os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
+            if name.lower().endswith((".mp4", ".mkv", ".webm"))
+        ]
+        if not files:
+            raise RuntimeError("yt-dlp did not produce a video file. The live stream may not be available.")
+        recording = max(files, key=os.path.getsize)
+        if os.path.getsize(recording) == 0:
+            raise RuntimeError("The recording file was empty.")
+        with open(recording, "rb") as video:
+            await context.bot.send_video(chat_id=chat_id, video=video, supports_streaming=True, caption="Live recording complete")
+    except asyncio.CancelledError:
+        if process and process.returncode is None:
+            process.kill()
+            await process.communicate()
+        raise
+    except Exception as exc:
+        logger.exception("Live recording failed: %s", exc)
+        await context.bot.send_message(chat_id=chat_id, text=f"Live recording failed: {str(exc)[:500]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        live_recording_tasks.pop(chat_id, None)
+
+async def record_live_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Only the bot administrator can record livestreams.")
+        return
+    if update.effective_chat.id in live_recording_tasks:
+        await update.message.reply_text("A livestream is already being recorded in this chat. Use /stoplive first.")
+        return
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/recordlive <YouTube URL> — record from now until the live ends\n"
+            "/recordlive <YouTube URL> 00 — record from the beginning until the live ends\n"
+            "/recordlive <YouTube URL> <minutes> — record from now for that many minutes"
+        )
+        return
+    url = context.args[0]
+    mode = context.args[1].lower() if len(context.args) > 1 else "end"
+    if not url.startswith(("https://www.youtube.com/", "https://youtube.com/", "https://youtu.be/")):
+        await update.message.reply_text("Please provide a valid YouTube URL.")
+        return
+    if mode in {"00", "start"}:
+        duration_minutes = None
+        from_start = True
+        duration_text = f"from the beginning until the live stream ends (maximum {LIVE_MAX_MINUTES} minutes)"
+    elif mode == "end":
+        duration_minutes = None
+        from_start = False
+        duration_text = f"from the current point until the live stream ends (maximum {LIVE_MAX_MINUTES} minutes)"
+    else:
+        try:
+            duration_minutes = int(mode)
+        except ValueError:
+            await update.message.reply_text("Duration must be a number of minutes or `end`.")
+            return
+        if duration_minutes < 1 or duration_minutes > LIVE_MAX_MINUTES:
+            await update.message.reply_text(f"Choose between 1 and {LIVE_MAX_MINUTES} minutes.")
+            return
+        from_start = False
+        duration_text = f"for {duration_minutes} minutes"
+    live_recording_tasks[update.effective_chat.id] = asyncio.create_task(
+        _record_live_job(update, context, url, duration_minutes, from_start)
+    )
+    await update.message.reply_text(
+        f"Recording started {duration_text}. I will send the finished video here."
+    )
+
+async def stop_live_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+    task = live_recording_tasks.pop(update.effective_chat.id, None)
+    if task and not task.done():
+        task.cancel()
+        await update.message.reply_text("Stopping the live recording...")
+    else:
+        await update.message.reply_text("No livestream is currently being recorded.")
 
 # --- NEW: Corrected and Improved TikTok Search Functions ---
 
@@ -3085,6 +3253,9 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("movie", movie_command), CommandHandler("tts", tts_command), CommandHandler("ai", ai_command),
         CommandHandler("folder", folder_command), CommandHandler("suggest", suggest_command),
         CommandHandler("clonevoice", clone_voice_command), CommandHandler("voice", voice_command),
+        CommandHandler("language", language_command),
+        CommandHandler("recordlive", record_live_command), CommandHandler("stoplive", stop_live_command),
+        CommandHandler("playlist", channel_playlist_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
@@ -3122,6 +3293,7 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handlers(msg_handlers)
     application.add_handlers(callback_handlers)
     application.add_handler(CallbackQueryHandler(handle_voice_consent, pattern="^voice_consent:"))
+    application.add_handler(CallbackQueryHandler(handle_voice_language, pattern="^voice_lang:"))
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice_sample))
     application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION | filters.Document.ALL, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))

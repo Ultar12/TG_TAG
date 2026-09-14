@@ -60,15 +60,6 @@
       "description": "Optional TMDB API key.",
       "required": false
     },
-    "ELEVENLABS_API_KEY": {
-      "description": "ElevenLabs API key for consent-based voice cloning and high-quality voice notes.",
-      "required": false
-    },
-    "ELEVENLABS_TTS_MODEL": {
-      "description": "Optional ElevenLabs TTS model. Defaults to eleven_multilingual_v2.",
-      "value": "eleven_multilingual_v2",
-      "required": false
-    },
     "AGENTROUTER_API_KEY": {
       "description": "AgentRouter API key for the /ai command.",
       "required": false
@@ -133,6 +124,11 @@
     },
     "WEBHOOK_SECRET_TOKEN": {
       "description": "Optional Telegram webhook secret token.",
+      "required": false
+    },
+    "LIVE_MAX_MINUTES": {
+      "description": "Maximum duration for a livestream recording. Defaults to 180 minutes.",
+      "value": "180",
       "required": false
     }
   },
