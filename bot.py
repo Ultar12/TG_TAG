@@ -353,6 +353,7 @@ async def show_ai_tools_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [KeyboardButton("Create Image")],
         [KeyboardButton("Read Text from Image"), KeyboardButton("Text to Speech")],
         [KeyboardButton("Animate Image"), KeyboardButton("Upscale Image")],
+        [KeyboardButton("Language"), KeyboardButton("YouTube Search")],
         [KeyboardButton("Back to Main Menu")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -362,6 +363,7 @@ async def show_media_tools_menu(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard = [
         [KeyboardButton("Play Music / Video")],
         [KeyboardButton("Download PDF"), KeyboardButton("Search Movie")],
+        [KeyboardButton("YouTube Search")],
         [KeyboardButton("Back to Main Menu")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -3413,6 +3415,8 @@ CommandHandler("readtext", read_text_from_image_command),
         "Create Image": lambda u,c: prompt_for_input(u,c,'awaiting_create_prompt', "Describe the image...", "Pressed 'Create Image'"),
         "Read Text from Image": lambda u,c: u.message.reply_text("Reply to an image with /readtext."),
         "Text to Speech": lambda u,c: prompt_for_input(u,c,'awaiting_tts_text', "What text to speak?", "Pressed 'TTS'"),
+        "Language": language_command,
+        "YouTube Search": lambda u,c: prompt_for_input(u,c,'awaiting_ytsearch_query', "What should I search for on YouTube?", "Pressed 'YouTube Search'"),
         "Upscale Image": lambda u,c: u.message.reply_text("Reply to an image with /upscale."),
         "Animate Image": lambda u,c: u.message.reply_text("Reply to an image with /animate."),
         "Play Music / Video": lambda u,c: prompt_for_input(u,c,'awaiting_song_name', "What song or video?", "Pressed 'Play'"),
