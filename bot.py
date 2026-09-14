@@ -866,8 +866,12 @@ async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_T
     os.makedirs(temp_dir)
     try:
         input_path = os.path.join(temp_dir, "input.jpg" if is_image else "input.mp4")
-        media_file = await (replied.photo[-1] if is_image else replied.video).get_file()
-        await media_file.download_to_drive(input_path)
+        media_file = await (replied.photo[-1] if is_image else replied.video).get_file(
+            read_timeout=300, connect_timeout=60, pool_timeout=60
+        )
+        await media_file.download_to_drive(
+            input_path, read_timeout=300, write_timeout=300, connect_timeout=60, pool_timeout=60
+        )
         await feedback.edit_text(f"Upscaling {media_type} locally to 4K...")
         if is_image:
             output_path = os.path.join(temp_dir, "upscaled_4k.jpg")
@@ -895,13 +899,19 @@ async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_T
         await feedback.edit_text("4K upscale complete. Uploading...")
         with open(output_path, 'rb') as f:
             if is_image:
-                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f, caption="Image upscaled to 4K resolution.")
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id, photo=f, caption="Image upscaled to 4K resolution.",
+                    read_timeout=300, write_timeout=300, connect_timeout=60, pool_timeout=60,
+                )
             else:
-                await context.bot.send_video(chat_id=update.effective_chat.id, video=f, caption="Video upscaled to 4K resolution.", supports_streaming=True)
+                await context.bot.send_video(
+                    chat_id=update.effective_chat.id, video=f, caption="Video upscaled to 4K resolution.",
+                    supports_streaming=True, read_timeout=300, write_timeout=300, connect_timeout=60, pool_timeout=60,
+                )
         await feedback.delete()
     except Exception as e:
         logger.error(f"Error in /4k command: {e}")
-        await feedback.edit_text(f"An unexpected error occurred during 4K upscaling: {str(e)[:300]}")
+        await feedback.edit_text(f"4K upscaling failed: {str(e)[:300]}")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
