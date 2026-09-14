@@ -154,6 +154,11 @@ VOICE_LANGUAGES = {
     "it": "Italian", "pt": "Portuguese", "ar": "Arabic", "hi": "Hindi",
     "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
 }
+VOICE_LANGUAGE_ALIASES = {
+    "germany": "de", "deutsch": "de", "spain": "es", "español": "es",
+    "france": "fr", "italy": "it", "brazil": "pt", "china": "zh",
+    "japan": "ja", "korea": "ko", "russia": "ru", "england": "en", "usa": "en",
+}
 voice_language_preferences: dict[int, str] = {}
 LIVE_MAX_MINUTES = int(os.environ.get("LIVE_MAX_MINUTES", "180"))
 live_recording_tasks: dict[int, asyncio.Task] = {}
@@ -1570,7 +1575,7 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"Available: {choices}"
         )
         return
-    language_id = next(
+    language_id = VOICE_LANGUAGE_ALIASES.get(requested) or next(
         (code for code, label in VOICE_LANGUAGES.items()
          if requested == code.casefold() or requested == label.casefold()),
         None,
@@ -1581,7 +1586,10 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
     voice_language_preferences[update.effective_user.id] = language_id
-    await update.message.reply_text(f"Language set to {VOICE_LANGUAGES[language_id]} ({language_id}).")
+    await update.message.reply_text(
+        f"TTS language set to {VOICE_LANGUAGES[language_id]} ({language_id}). "
+        "This changes pronunciation; it does not translate the text."
+    )
 
 async def handle_voice_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
