@@ -72,7 +72,6 @@ GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 # Other API Keys
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN") 
-STABILITY_API_KEY = os.environ.get("STABILITY_API_KEY")
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
 SCREENSHOT_API_KEY = os.environ.get("SCREENSHOT_API_KEY")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
@@ -480,7 +479,7 @@ async def resend_email_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Failed to send email via job {job.name}: {e}")
         await context.bot.send_message(
             chat_id=data['chat_id'], 
-            text=f"⚠️ Failed to send recurring email to *{escape_markdown(data['to'], version=2)}*\\.",
+            text=f"️ Failed to send recurring email to *{escape_markdown(data['to'], version=2)}*\\.",
 
             parse_mode=ParseMode.MARKDOWN_V2
         )
@@ -549,7 +548,7 @@ async def handle_resend_stop_day_selection(update: Update, context: ContextTypes
     stop_day_name = days[stop_day_index]
     
     await query.edit_message_text(
-        f"✅ All set\\! I will resend the email to *{escape_markdown(email_data['to'], version=2)}* every {interval // 60} minutes\\. This will stop on *{stop_day_name}*\\.",
+        f" All set\\! I will resend the email to *{escape_markdown(email_data['to'], version=2)}* every {interval // 60} minutes\\. This will stop on *{stop_day_name}*\\.",
 
         parse_mode=ParseMode.MARKDOWN_V2
     )
@@ -572,7 +571,7 @@ async def handle_resend_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def movie_command(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str = None) -> None:
     if not TMDB_API_KEY:
-        await update.message.reply_text("❌ Movie search service is not configured. Set `TMDB_API_KEY` in your environment.")
+        await update.message.reply_text(" Movie search service is not configured. Set `TMDB_API_KEY` in your environment.")
         return
     if not title:
         title = " ".join(context.args)
@@ -587,10 +586,10 @@ async def movie_command(update: Update, context: ContextTypes.DEFAULT_TYPE, titl
         
         # Check for API errors
         if response.status_code == 401:
-            await feedback.edit_text("❌ Invalid TMDB API key. Please check your `TMDB_API_KEY`.")
+            await feedback.edit_text(" Invalid TMDB API key. Please check your `TMDB_API_KEY`.")
             return
         elif response.status_code == 429:
-            await feedback.edit_text("⚠️ Rate limited. Please try again in a few moments.")
+            await feedback.edit_text("️ Rate limited. Please try again in a few moments.")
             return
         
         response.raise_for_status()
@@ -613,10 +612,10 @@ async def movie_command(update: Update, context: ContextTypes.DEFAULT_TYPE, titl
             await feedback.edit_text(caption, parse_mode=ParseMode.MARKDOWN_V2)
     except requests.exceptions.Timeout:
         logger.error(f"Movie command timeout")
-        await feedback.edit_text("❌ Request timed out. TMDB service may be slow or offline.")
+        await feedback.edit_text(" Request timed out. TMDB service may be slow or offline.")
     except Exception as e:
         logger.error(f"Movie command failed: {e}")
-        await feedback.edit_text(f"❌ Search failed: {str(e)[:100]}.")
+        await feedback.edit_text(f" Search failed: {str(e)[:100]}.")
 
 async def screenshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str = None) -> None:
     if not SCREENSHOT_API_KEY:
@@ -726,12 +725,12 @@ async def edit_photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def upscale_image_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not REPLICATE_API_TOKEN:
-        await update.message.reply_text("❌ Image upscaling service (Replicate) is not configured. Set `REPLICATE_API_TOKEN` in your environment.")
+        await update.message.reply_text(" Image upscaling service (Replicate) is not configured. Set `REPLICATE_API_TOKEN` in your environment.")
         return
     if not update.message.reply_to_message or not update.message.reply_to_message.photo:
         await update.message.reply_text("Please reply to an image with the `/upscale` command.")
         return
-    feedback = await update.message.reply_text("🚀 Sending image to Replicate for upscaling... (this may take 30-60 seconds)")
+    feedback = await update.message.reply_text(" Sending image to Replicate for upscaling... (this may take 30-60 seconds)")
     try:
         photo_file = await update.message.reply_to_message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
@@ -739,7 +738,7 @@ async def upscale_image_command(update: Update, context: ContextTypes.DEFAULT_TY
         # Check image size (Replicate has limits)
         image_size_mb = len(image_bytes) / (1024 * 1024)
         if image_size_mb > 5:
-            await feedback.edit_text(f"⚠️ Image is quite large ({image_size_mb:.2f} MB). Upscaling may be slow or fail. Please try a smaller image (< 5 MB).")
+            await feedback.edit_text(f"️ Image is quite large ({image_size_mb:.2f} MB). Upscaling may be slow or fail. Please try a smaller image (< 5 MB).")
             return
         
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -762,7 +761,7 @@ async def upscale_image_command(update: Update, context: ContextTypes.DEFAULT_TY
         start_response.raise_for_status()
         
         prediction_url = start_response.json()["urls"]["get"]
-        await feedback.edit_text("⏳ Upscaling job started... Processing your image with AI-powered 4x upscaler.")
+        await feedback.edit_text(" Upscaling job started... Processing your image with AI-powered 4x upscaler.")
         
         result_data = {}
         for attempt in range(60):  # Max 2 minutes (60 * 2s)
@@ -779,14 +778,14 @@ async def upscale_image_command(update: Update, context: ContextTypes.DEFAULT_TY
             
             # Update user every 10 seconds
             if attempt % 5 == 0 and attempt > 0:
-                await feedback.edit_text(f"⏳ Still processing... ({attempt * 2} seconds elapsed)")
+                await feedback.edit_text(f" Still processing... ({attempt * 2} seconds elapsed)")
         
         if result_data.get("status") != "succeeded" or not result_data.get("output"):
             raise Exception("Upscaling job timed out or did not produce output.")
         
         final_image_url = result_data["output"]
         
-        await feedback.edit_text("✅ Upscaling complete! Downloading and sending...")
+        await feedback.edit_text(" Upscaling complete! Downloading and sending...")
         
         # Download upscaled image
         img_response = requests.get(final_image_url, timeout=30)
@@ -795,89 +794,64 @@ async def upscale_image_command(update: Update, context: ContextTypes.DEFAULT_TY
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=img_response.content,
-            caption='✨ Here is your upscaled image (4x resolution, enhanced by AI)!'
+            caption=' Here is your upscaled image (4x resolution, enhanced by AI)!'
         )
         await feedback.delete()
         
     except requests.exceptions.ConnectionError:
         logger.error("Connection error to Replicate API")
-        await feedback.edit_text("❌ Connection error. Replicate service may be temporarily unavailable.")
+        await feedback.edit_text(" Connection error. Replicate service may be temporarily unavailable.")
     except Exception as e:
         logger.error(f"Upscale command error: {e}")
         error_str = str(e)
         if "401" in error_str or "Unauthorized" in error_str:
-            await feedback.edit_text("❌ Invalid Replicate API token. Check your `REPLICATE_API_TOKEN`.")
+            await feedback.edit_text(" Invalid Replicate API token. Check your `REPLICATE_API_TOKEN`.")
         elif "rate" in error_str.lower():
-            await feedback.edit_text("❌ Rate limit exceeded. Please wait before trying again.")
+            await feedback.edit_text(" Rate limit exceeded. Please wait before trying again.")
         else:
-            await feedback.edit_text(f"❌ Upscaling failed: {error_str[:100]}. Please try a different image.")
+            await feedback.edit_text(f" Upscaling failed: {error_str[:100]}. Please try a different image.")
 
 async def animate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not STABILITY_API_KEY:
-        await update.message.reply_text("❌ Video animation service not configured. Set `STABILITY_API_KEY` in your environment.")
-        return
     if not update.message.reply_to_message or not update.message.reply_to_message.photo:
         await update.message.reply_text("Please reply to an image with /animate.")
         return
-    feedback = await update.message.reply_text("[Processing] image to animation engine... (this may take 1-2 minutes)")
+    feedback = await update.message.reply_text("Creating a local animated video from your image...")
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"animate_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
     try:
         photo_file = await update.message.reply_to_message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
-        
-        # Check image size
-        image_size_mb = len(image_bytes) / (1024 * 1024)
-        if image_size_mb > 5:
-            await feedback.edit_text(f"⚠️ Image is quite large ({image_size_mb:.2f} MB). Animation may fail. Please try a smaller image (< 5 MB).")
-            return
-        
-        response = requests.post(
-            "https://api.stability.ai/v2/generation/image-to-video",
-            headers={"authorization": f"Bearer {STABILITY_API_KEY}"},
-            files={"image": image_bytes},
-            data={"motion_bucket_id": 40},
-            timeout=30,
+        image_path = os.path.join(temp_dir, "source.jpg")
+        video_path = os.path.join(temp_dir, "animation.mp4")
+        with open(image_path, "wb") as image_file:
+            image_file.write(bytes(image_bytes))
+        filter_graph = (
+            "scale=1280:720:force_original_aspect_ratio=decrease,"
+            "pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
+            "zoompan=z='min(zoom+0.0015,1.12)':"
+            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=120:s=1280x720:fps=24"
         )
-        response.raise_for_status()
-        generation_id = response.json()["id"]
-        await feedback.edit_text("⏳ Animation processing... this may take a minute. Please be patient.")
-        
-        for poll_attempt in range(45):  # Max 3 minutes
-            await asyncio.sleep(4)
-            res = requests.get(
-                f"https://api.stability.ai/v2/generation/image-to-video/result/{generation_id}",
-                headers={'authorization': f"Bearer {STABILITY_API_KEY}", 'accept': "video/mp4"},
-                timeout=20,
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-loop", "1", "-i", image_path, "-vf", filter_graph, "-t", "5",
+            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", video_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode != 0 or not os.path.isfile(video_path):
+            raise RuntimeError(stderr.decode(errors="replace")[-500:])
+        with open(video_path, "rb") as video_file:
+            await context.bot.send_video(
+                update.effective_chat.id,
+                video=video_file,
+                caption="Local image animation complete.",
             )
-            if res.status_code == 200:
-                await feedback.edit_text("✅ Animation complete! Uploading video...")
-                await context.bot.send_video(
-                    update.effective_chat.id, 
-                    video=res.content, 
-                    caption="[Animation] Here is your animated video!"
-                )
-                await feedback.delete()
-                return
-            elif res.status_code >= 400:
-                raise Exception(f"API error {res.status_code}: {res.text[:200]}")
-            
-            # Update progress
-            if poll_attempt % 10 == 0 and poll_attempt > 0:
-                await feedback.edit_text(f"⏳ Still animating... ({poll_attempt * 4} seconds elapsed)")
-        
-        await feedback.edit_text("❌ Animation timed out. The video generation took too long. Please try a different image.")
-        
-    except requests.exceptions.ConnectionError:
-        logger.error("Connection error to Stability AI API")
-        await feedback.edit_text("❌ Connection error. Stability AI service may be temporarily unavailable.")
-    except Exception as e:
-        logger.error(f"Animate command error: {e}")
-        error_str = str(e)
-        if "401" in error_str or "Unauthorized" in error_str:
-            await feedback.edit_text("❌ Invalid Stability API key. Check your `STABILITY_API_KEY`.")
-        elif "403" in error_str or "Forbidden" in error_str:
-            await feedback.edit_text("❌ Access denied. Your Stability API account may have insufficient credits or be restricted.")
-        else:
-            await feedback.edit_text(f"❌ Animation failed: {error_str[:100]}. Please try a different image.")
+        await feedback.delete()
+    except Exception as exc:
+        logger.exception("Local animation failed: %s", exc)
+        await feedback.edit_text(f"Local animation failed: {str(exc)[:300]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
     
 # --- NEW 4K VIDEO UPSCALING COMMAND ---
 async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -898,7 +872,7 @@ async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_T
         
         # Check size before starting the expensive process
         if os.path.getsize(input_path) > 10 * 1024 * 1024:
-             await feedback.edit_text("⚠️ The video is quite large. Upscaling may be very slow or fail due to processing limits. Proceeding with caution...")
+             await feedback.edit_text("️ The video is quite large. Upscaling may be very slow or fail due to processing limits. Proceeding with caution...")
         
         await feedback.edit_text("[Processing] Starting 4K Upscale and Quality Enhancement...")
 
@@ -926,7 +900,7 @@ async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_T
         if process.returncode != 0:
             error_output = stderr.decode()
             logger.error(f"FFmpeg 4K upscale failed: {error_output}")
-            await feedback.edit_text(f"❌ 4K upscale failed! The process was terminated. Please try a much shorter video (under 10 seconds). FFmpeg Error: {error_output[:200]}...")
+            await feedback.edit_text(f" 4K upscale failed! The process was terminated. Please try a much shorter video (under 10 seconds). FFmpeg Error: {error_output[:200]}...")
             return
 
         await feedback.edit_text("⬆️ 4K Upscale complete. Uploading video...")
@@ -940,7 +914,7 @@ async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_T
             await context.bot.send_video(
                 chat_id=update.effective_chat.id, 
                 video=f, 
-                caption="✅ Video upscaled to 4K HD resolution!", 
+                caption=" Video upscaled to 4K HD resolution!",
                 supports_streaming=True
             )
         await feedback.delete()
@@ -3232,7 +3206,7 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_suggestion(update: Update, context: ContextTypes.DEFAULT_TYPE, suggestion: str):
     user = update.effective_user
-    admin_message = f"📩 Suggestion from {user.first_name} (`{user.id}`):\n\n{suggestion}"
+    admin_message = f" Suggestion from {user.first_name} (`{user.id}`):\n\n{suggestion}"
     await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message, parse_mode=ParseMode.MARKDOWN)
     await update.message.reply_text("Thank you! Your suggestion has been sent.")
 

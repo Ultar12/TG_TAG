@@ -44,10 +44,6 @@
       "description": "Optional Replicate API token.",
       "required": false
     },
-    "STABILITY_API_KEY": {
-      "description": "Optional Stability AI API key.",
-      "required": false
-    },
     "OPENWEATHER_API_KEY": {
       "description": "Optional OpenWeather API key.",
       "required": false

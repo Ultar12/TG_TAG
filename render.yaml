@@ -18,8 +18,6 @@ services:
         sync: false
       - key: REPLICATE_API_TOKEN
         sync: false
-      - key: STABILITY_API_KEY
-        sync: false
       - key: OPENWEATHER_API_KEY
         sync: false
       - key: SCREENSHOT_API_KEY
