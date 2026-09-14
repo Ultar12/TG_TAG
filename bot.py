@@ -1561,14 +1561,27 @@ async def handle_voice_consent(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     current = voice_language_preferences.get(update.effective_user.id, "en")
-    keyboard = [
-        [InlineKeyboardButton(label, callback_data=f"voice_lang:{code}")]
-        for code, label in VOICE_LANGUAGES.items()
-    ]
-    await update.message.reply_text(
-        f"Choose the language for your cloned voice. Current: {VOICE_LANGUAGES[current]}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+    requested = " ".join(context.args).strip().casefold()
+    if not requested:
+        choices = ", ".join(f"{label} ({code})" for code, label in VOICE_LANGUAGES.items())
+        await update.message.reply_text(
+            f"Current language: {VOICE_LANGUAGES[current]}\n"
+            f"Usage: /language <language>\n"
+            f"Available: {choices}"
+        )
+        return
+    language_id = next(
+        (code for code, label in VOICE_LANGUAGES.items()
+         if requested == code.casefold() or requested == label.casefold()),
+        None,
     )
+    if not language_id:
+        await update.message.reply_text(
+            f"Unknown language: {requested}. Use /language to see the available languages."
+        )
+        return
+    voice_language_preferences[update.effective_user.id] = language_id
+    await update.message.reply_text(f"Language set to {VOICE_LANGUAGES[language_id]} ({language_id}).")
 
 async def handle_voice_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
