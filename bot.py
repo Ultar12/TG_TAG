@@ -1894,21 +1894,23 @@ async def youtube_command(update: Update, context: ContextTypes.DEFAULT_TYPE, qu
             **YTDL_COMMON_OPTIONS,
         }
         # --- END FIX ---
+        search_query = query if query.startswith(("ytsearch", "https://", "http://")) else f"ytsearch5:{query}"
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
-        if not info or not info.get('entries'):
+            info = await asyncio.to_thread(ydl.extract_info, search_query, download=False)
+        entries = [entry for entry in (info or {}).get('entries', []) if entry and entry.get('id')]
+        if not entries:
             await feedback.edit_text("Sorry, couldn't find any results or YouTube blocked the search request. If this continues, check your `cookies_youtube.txt` file.")
             return
         keyboard = [
             [InlineKeyboardButton(
                 (v['title'][:60] + '..') if len(v['title']) > 60 else v['title'],
                 callback_data=f"play_confirm:{v['id']}"
-            )] for v in info['entries'] if v and v.get('id')
+            )] for v in entries
         ]
         await feedback.edit_text("Top 5 results:", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         logger.error(f"YouTube error: {e}")
-        await feedback.edit_text("An error occurred during the search.")
+        await feedback.edit_text(f"YouTube search failed: {str(e)[:500]}")
 
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     song_name = " ".join(context.args)
@@ -3417,6 +3419,8 @@ CommandHandler("readtext", read_text_from_image_command),
         CallbackQueryHandler(handle_video_download, pattern="^dl_video:"),
         CallbackQueryHandler(handle_tiktok_count_selection, pattern="^tiktok_count:"),
         CallbackQueryHandler(handle_novel_download, pattern="^novel_dl:"),
+        CallbackQueryHandler(handle_voice_consent, pattern="^voice_consent:"),
+        CallbackQueryHandler(handle_voice_language, pattern="^voice_lang:"),
         # --- HANDLERS for recurring email ---
         CallbackQueryHandler(handle_resend_interval_selection, pattern="^resend_interval:"),
         CallbackQueryHandler(handle_resend_stop_day_selection, pattern="^resend_stop:"),
@@ -3426,8 +3430,6 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handlers(cmd_handlers)
     application.add_handlers(msg_handlers)
     application.add_handlers(callback_handlers)
-    application.add_handler(CallbackQueryHandler(handle_voice_consent, pattern="^voice_consent:"))
-    application.add_handler(CallbackQueryHandler(handle_voice_language, pattern="^voice_lang:"))
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice_sample))
     application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION | filters.Document.ALL, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
