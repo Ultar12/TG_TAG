@@ -53,6 +53,16 @@
       "value": "eleven_multilingual_v2",
       "required": false
     },
+    "ELEVENLABS_VOICE_ID": {
+      "description": "Optional ElevenLabs premade voice ID for /tts.",
+      "value": "21m00Tcm4TlvDq8ikWAM",
+      "required": false
+    },
+    "ELEVENLABS_STT_MODEL": {
+      "description": "ElevenLabs speech-to-text model.",
+      "value": "scribe_v1",
+      "required": false
+    },
     "OPENWEATHER_API_KEY": {
       "description": "Optional OpenWeather API key.",
       "required": false

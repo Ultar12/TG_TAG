@@ -79,6 +79,8 @@ VOICE_ENGINE_URL = os.environ.get("VOICE_ENGINE_URL", "http://voice-engine:8000"
 VOICE_ENGINE_TOKEN = os.environ.get("VOICE_ENGINE_TOKEN", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+ELEVENLABS_STT_MODEL = os.environ.get("ELEVENLABS_STT_MODEL", "scribe_v1")
 AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
 AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
 AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
@@ -391,6 +393,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/play <song name>**: Search and download a song or video.\n"
         "**/nosubs**: Reply to a video to remove soft subtitle tracks locally.\n"
         "**/tts <text>**: Convert text to speech.\n"
+        "**/stt**: Reply to voice, audio, or video to transcribe speech.\n"
         "**/clonevoice**: Create a consent-based voice profile from a voice message or video, then generate voice notes from text.\n"
         "**/ai <question>**: Test AgentRouter in any supported language.\n"
         "**/session**: Generate a Telethon session string (admin only, private chat).\n"
@@ -999,9 +1002,31 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
     feedback = await update.message.reply_text("Generating audio...")
     temp_audio_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}.mp3")
     try:
-        await asyncio.to_thread(gTTS(text=text, lang='en').save, temp_audio_path)
+        if ELEVENLABS_API_KEY:
+            response = await asyncio.to_thread(
+                requests.post,
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+                params={"output_format": "mp3_44100_128"},
+                headers={
+                    "xi-api-key": ELEVENLABS_API_KEY,
+                    "Accept": "audio/mpeg",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": text,
+                    "model_id": ELEVENLABS_MODEL,
+                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+                },
+                timeout=180,
+            )
+            if not response.ok:
+                raise RuntimeError(f"ElevenLabs TTS failed ({response.status_code}): {response.text[:300]}")
+            with open(temp_audio_path, "wb") as audio_file:
+                audio_file.write(response.content)
+        else:
+            await asyncio.to_thread(gTTS(text=text, lang='en').save, temp_audio_path)
         with open(temp_audio_path, 'rb') as f:
-            await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f)
+            await context.bot.send_audio(chat_id=update.effective_chat.id, audio=f, title="Multilingual text to speech")
         await feedback.delete()
     except Exception as e:
         logger.error(f"gTTS Error: {e}")
@@ -1009,6 +1034,46 @@ async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE, text_t
     finally:
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
+
+async def speech_to_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    replied = update.message.reply_to_message
+    media = replied and (replied.voice or replied.audio or replied.video or replied.document)
+    if not media or (replied.document and not (replied.document.mime_type or "").startswith(("audio/", "video/"))):
+        await update.message.reply_text("Reply to a voice message, audio file, or video with /stt.")
+        return
+    if not ELEVENLABS_API_KEY:
+        await update.message.reply_text("Speech to text requires ELEVENLABS_API_KEY in the environment.")
+        return
+    feedback = await update.message.reply_text("Transcribing the audio...")
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"stt_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    try:
+        source_path = os.path.join(temp_dir, "source.bin")
+        telegram_file = await context.bot.get_file(media.file_id)
+        await telegram_file.download_to_drive(source_path)
+        with open(source_path, "rb") as audio_file:
+            response = await asyncio.to_thread(
+                requests.post,
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                data={"model_id": ELEVENLABS_STT_MODEL},
+                files={"file": ("audio.bin", audio_file, "application/octet-stream")},
+                timeout=180,
+            )
+        if not response.ok:
+            raise RuntimeError(f"ElevenLabs STT failed ({response.status_code}): {response.text[:300]}")
+        result = response.json()
+        transcript = str(result.get("text") or "").strip()
+        if not transcript:
+            raise RuntimeError("No speech was detected.")
+        language = result.get("language_code")
+        suffix = f"\n\nLanguage: {language}" if language else ""
+        await feedback.edit_text((f"{transcript}{suffix}")[:4000])
+    except Exception as exc:
+        logger.exception("Speech-to-text failed: %s", exc)
+        await feedback.edit_text(f"Speech-to-text failed: {str(exc)[:300]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 async def ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Test AgentRouter with a short multilingual question."""
@@ -3303,7 +3368,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("4k", four_k_upscale_command), # NEW 4K VIDEO COMMAND
         CommandHandler("novel", novel_command), CommandHandler("riddle", get_riddle), 
         CommandHandler("gmail", gmail_command), CommandHandler("screenshot", screenshot_command),
-        CommandHandler("movie", movie_command), CommandHandler("tts", tts_command), CommandHandler("ai", ai_command),
+        CommandHandler("movie", movie_command), CommandHandler("tts", tts_command), CommandHandler("stt", speech_to_text_command), CommandHandler("ai", ai_command),
         CommandHandler("folder", folder_command), CommandHandler("suggest", suggest_command),
         CommandHandler("clonevoice", clone_voice_command), CommandHandler("voice", voice_command),
         CommandHandler("language", language_command),
