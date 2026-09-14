@@ -921,7 +921,7 @@ async def remove_subtitles_command(update: Update, context: ContextTypes.DEFAULT
         await media_file.download_to_drive(input_path)
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path,
-            "-map", "0", "-map", "-0:s", "-c", "copy", output_path,
+            "-map", "0:v:0", "-map", "0:a?", "-c", "copy", output_path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await process.communicate()
@@ -938,8 +938,9 @@ async def remove_subtitles_command(update: Update, context: ContextTypes.DEFAULT
     except Exception as exc:
         logger.exception("Subtitle removal failed: %s", exc)
         await feedback.edit_text(
-            "Could not remove subtitle tracks. This command removes soft subtitles only; "
-            "burned-in subtitles require cropping, blurring, or video restoration."
+            "Could not process this video. It may have an unsupported format or no usable video stream. "
+            "The command removes soft subtitles only; burned-in subtitles require cropping, blurring, "
+            "or video restoration."
         )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
