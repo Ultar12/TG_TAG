@@ -1907,7 +1907,9 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
         
         await query.edit_message_text("Downloading video to server...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl_dl:
-            ydl_dl.download([video_id])
+            info = ydl_dl.extract_info(video_id, download=True)
+        video_title = str((info or {}).get("title") or "Downloaded YouTube video").strip()
+        video_caption = video_title[:1024]
             
         downloaded_files = [
             os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
@@ -1939,7 +1941,8 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
                 await context.bot.send_video(
                     chat_id=query.message.chat_id, 
                     video=f, 
-                    supports_streaming=True
+                    supports_streaming=True,
+                    caption=video_caption,
                 )
             await query.delete_message()
             return # Success, exit function
@@ -1989,10 +1992,10 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
             if os.path.exists(path) and os.path.getsize(path) > 0:
                 with open(path, 'rb') as f_split:
                     await context.bot.send_video(
-                        chat_id=query.message.chat_id, 
-                        video=f_split, 
-                        caption=f"Video Part {i+1}/{num_parts}", 
-                        supports_streaming=True
+                        chat_id=query.message.chat_id,
+                        video=f_split,
+                        caption=f"{video_caption} (Part {i+1}/{num_parts})",
+                        supports_streaming=True,
                     )
                     sent_count += 1
             
@@ -2029,10 +2032,10 @@ async def handle_video_download(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(f"Compression successful! ({compressed_size_mb:.2f} MB). Uploading...")
             with open(compressed_path, 'rb') as f_comp:
                 await context.bot.send_video(
-                    chat_id=query.message.chat_id, 
-                    video=f_comp, 
-                    caption="Compressed Video (Original was too large)", 
-                    supports_streaming=True
+                    chat_id=query.message.chat_id,
+                    video=f_comp,
+                    caption=f"{video_caption} (compressed; original was too large)",
+                    supports_streaming=True,
                 )
             await query.delete_message()
         else:

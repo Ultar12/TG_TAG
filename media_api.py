@@ -1154,14 +1154,18 @@ class DownloadHandler(_BaseHandler):
 
             if not requested_quality:
                 requested_quality = self.get_query_argument("quality", default="")
-            video_path, temp_dir = await asyncio.to_thread(
+            video_path, temp_dir, info = await asyncio.to_thread(
                 _download_video_file_sync,
                 url,
                 self.common_options,
                 "youtube.com" in host or "youtu.be" in host,
                 _normalize_quality_height(requested_quality),
+                True,
             )
             try:
+                caption = str((info or {}).get("title") or "Downloaded video").strip()
+                if caption:
+                    self.set_header("X-Media-Caption", quote(caption[:1024], safe=""))
                 await self._stream_file(video_path, "downloaded-video.mp4", "video/mp4")
             finally:
                 shutil.rmtree(temp_dir, ignore_errors=True)
