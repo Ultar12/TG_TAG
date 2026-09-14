@@ -387,6 +387,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/movie <title>**: Get information about a movie.\n"
         "**/ytsearch <query>**: Search for YouTube videos.\n"
         "**/play <song name>**: Search and download a song or video.\n"
+        "**/nosubs**: Reply to a video to remove soft subtitle tracks locally.\n"
         "**/tts <text>**: Convert text to speech.\n"
         "**/clonevoice**: Create a consent-based voice profile from a voice message or video, then generate voice notes from text.\n"
         "**/ai <question>**: Test AgentRouter in any supported language.\n"
@@ -901,6 +902,45 @@ async def four_k_upscale_command(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.error(f"Error in /4k command: {e}")
         await feedback.edit_text(f"An unexpected error occurred during 4K upscaling: {str(e)[:300]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+async def remove_subtitles_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    replied = update.message.reply_to_message
+    if not replied or (not replied.video and not (replied.document and (replied.document.mime_type or "").startswith("video/"))):
+        await update.message.reply_text("Reply to a video with /nosubs.")
+        return
+    feedback = await update.message.reply_text("Removing embedded subtitle tracks locally...")
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"nosubs_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    try:
+        media = replied.video or replied.document
+        input_path = os.path.join(temp_dir, "input.video")
+        output_path = os.path.join(temp_dir, "video-without-subtitles.mp4")
+        media_file = await context.bot.get_file(media.file_id)
+        await media_file.download_to_drive(input_path)
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", input_path,
+            "-map", "0", "-map", "-0:s", "-c", "copy", output_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode != 0 or not os.path.isfile(output_path):
+            raise RuntimeError(stderr.decode(errors="replace")[-500:])
+        with open(output_path, "rb") as video_file:
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=video_file,
+                supports_streaming=True,
+                caption="Video without embedded subtitles.",
+            )
+        await feedback.delete()
+    except Exception as exc:
+        logger.exception("Subtitle removal failed: %s", exc)
+        await feedback.edit_text(
+            "Could not remove subtitle tracks. This command removes soft subtitles only; "
+            "burned-in subtitles require cropping, blurring, or video restoration."
+        )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -3218,6 +3258,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("language", language_command),
         CommandHandler("recordlive", record_live_command), CommandHandler("stoplive", stop_live_command),
         CommandHandler("playlist", channel_playlist_command),
+        CommandHandler("nosubs", remove_subtitles_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
