@@ -1532,28 +1532,34 @@ async def _record_live_job(update: Update, context: ContextTypes.DEFAULT_TYPE, u
     ]
     if from_start:
         args.append("--live-from-start")
+    args.extend(["--wait-for-video", "30"])
     args.append(url)
     process = None
+    process_output = ""
     try:
         process = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
         timeout = duration_minutes * 60 if duration_minutes else LIVE_MAX_MINUTES * 60
         try:
-            await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            process_output = stdout.decode(errors="replace")
         except asyncio.TimeoutError:
             process.send_signal(signal.SIGINT)
             try:
-                await asyncio.wait_for(process.communicate(), timeout=30)
+                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+                process_output = stdout.decode(errors="replace")
             except asyncio.TimeoutError:
                 process.kill()
-                await process.communicate()
+                stdout, _ = await process.communicate()
+                process_output = stdout.decode(errors="replace")
         files = [
             os.path.join(temp_dir, name) for name in os.listdir(temp_dir)
             if name.lower().endswith((".mp4", ".mkv", ".webm"))
         ]
         if not files:
-            raise RuntimeError("yt-dlp did not produce a video file. The live stream may not be available.")
+            details = process_output[-1200:].strip() or "No output was returned by yt-dlp."
+            raise RuntimeError(f"yt-dlp did not produce a video file. Exit code: {process.returncode}.\n{details}")
         recording = max(files, key=os.path.getsize)
         if os.path.getsize(recording) == 0:
             raise RuntimeError("The recording file was empty.")
