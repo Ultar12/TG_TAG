@@ -77,6 +77,8 @@ SCREENSHOT_API_KEY = os.environ.get("SCREENSHOT_API_KEY")
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
 VOICE_ENGINE_URL = os.environ.get("VOICE_ENGINE_URL", "http://voice-engine:8000").rstrip("/")
 VOICE_ENGINE_TOKEN = os.environ.get("VOICE_ENGINE_TOKEN", "")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_MODEL = os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY")
 AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://co.agentrouter.org/v1")
 AGENTROUTER_MODEL = os.environ.get("AGENTROUTER_MODEL", "claude-opus-4-8")
@@ -1307,7 +1309,21 @@ def _voice_engine_headers() -> dict:
         headers["X-Voice-Engine-Token"] = VOICE_ENGINE_TOKEN
     return headers
 def _clone_voice_sync(sample_path: str, voice_name: str) -> str:
-    del voice_name
+    if ELEVENLABS_API_KEY:
+        with open(sample_path, "rb") as sample:
+            response = requests.post(
+                "https://api.elevenlabs.io/v1/voices/add",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                data={"name": voice_name, "description": "Telegram voice profile"},
+                files={"files": (os.path.basename(sample_path), sample, "audio/mpeg")},
+                timeout=180,
+            )
+        if not response.ok:
+            raise RuntimeError(f"ElevenLabs voice cloning failed ({response.status_code}): {response.text[:300]}")
+        voice_id = response.json().get("voice_id")
+        if not voice_id:
+            raise RuntimeError("ElevenLabs returned no voice ID.")
+        return voice_id
     with open(sample_path, "rb") as sample:
         response = requests.post(
             f"{VOICE_ENGINE_URL}/clone",
@@ -1322,6 +1338,27 @@ def _clone_voice_sync(sample_path: str, voice_name: str) -> str:
         raise RuntimeError("Local voice engine returned no voice ID.")
     return voice_id
 def _synthesize_voice_sync(voice_id: str, text: str, output_path: str, language_id: str) -> None:
+    if ELEVENLABS_API_KEY:
+        response = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            params={"output_format": "mp3_44100_128"},
+            headers={
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": text,
+                "model_id": ELEVENLABS_MODEL,
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            },
+            timeout=180,
+        )
+        if not response.ok:
+            raise RuntimeError(f"ElevenLabs voice generation failed ({response.status_code}): {response.text[:300]}")
+        with open(output_path, "wb") as output:
+            output.write(response.content)
+        return
     response = requests.post(
         f"{VOICE_ENGINE_URL}/synthesize",
         headers={**_voice_engine_headers(), "Content-Type": "application/json"},

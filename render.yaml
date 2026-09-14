@@ -18,6 +18,10 @@ services:
         sync: false
       - key: REPLICATE_API_TOKEN
         sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_MODEL
+        value: eleven_multilingual_v2
       - key: OPENWEATHER_API_KEY
         sync: false
       - key: SCREENSHOT_API_KEY

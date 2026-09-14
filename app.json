@@ -44,6 +44,15 @@
       "description": "Optional Replicate API token.",
       "required": false
     },
+    "ELEVENLABS_API_KEY": {
+      "description": "Optional ElevenLabs API key for multilingual voice cloning and speech.",
+      "required": false
+    },
+    "ELEVENLABS_MODEL": {
+      "description": "ElevenLabs model used for multilingual speech.",
+      "value": "eleven_multilingual_v2",
+      "required": false
+    },
     "OPENWEATHER_API_KEY": {
       "description": "Optional OpenWeather API key.",
       "required": false
