@@ -1,0 +1,54 @@
+name: Sync GitHub configuration to Heroku
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync-config:
+    runs-on: ubuntu-latest
+    # If your values are stored in a GitHub Environment, change this to that
+    # environment name (for example: production).
+    environment: production
+    steps:
+      - name: Validate deployment credentials
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME || secrets.HEROKU_APP_NAME }}
+        run: |
+          test -n "$HEROKU_API_KEY" || { echo "Missing GitHub secret HEROKU_API_KEY"; exit 1; }
+          test -n "$HEROKU_APP_NAME" || { echo "Missing GitHub variable or secret HEROKU_APP_NAME"; exit 1; }
+
+      - name: Sync Telegram and YouTube settings
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME || secrets.HEROKU_APP_NAME }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN || vars.BOT_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID || vars.ADMIN_ID }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID || vars.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET || vars.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN || vars.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_AUTO_UPLOAD: ${{ secrets.YOUTUBE_AUTO_UPLOAD || vars.YOUTUBE_AUTO_UPLOAD }}
+          YOUTUBE_LISTENER_CHANNEL: ${{ secrets.YOUTUBE_LISTENER_CHANNEL || vars.YOUTUBE_LISTENER_CHANNEL }}
+          YOUTUBE_LISTENER_INTERVAL: ${{ secrets.YOUTUBE_LISTENER_INTERVAL || vars.YOUTUBE_LISTENER_INTERVAL }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -n \
+            --arg bot "$BOT_TOKEN" \
+            --arg admin "$ADMIN_ID" \
+            --arg yt_id "$YOUTUBE_CLIENT_ID" \
+            --arg yt_secret "$YOUTUBE_CLIENT_SECRET" \
+            --arg yt_refresh "$YOUTUBE_REFRESH_TOKEN" \
+            --arg auto_upload "${YOUTUBE_AUTO_UPLOAD:-true}" \
+            --arg channel "${YOUTUBE_LISTENER_CHANNEL:-@helenefischer}" \
+            --arg interval "${YOUTUBE_LISTENER_INTERVAL:-3600}" \
+            '{BOT_TOKEN:$bot, ADMIN_ID:$admin, YOUTUBE_CLIENT_ID:$yt_id, YOUTUBE_CLIENT_SECRET:$yt_secret, YOUTUBE_REFRESH_TOKEN:$yt_refresh, YOUTUBE_AUTO_UPLOAD:$auto_upload, YOUTUBE_LISTENER_CHANNEL:$channel, YOUTUBE_LISTENER_INTERVAL:$interval}')
+          curl --fail --silent --show-error \
+            -X PATCH \
+            -H "Authorization: Bearer ${HEROKU_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "$payload" \
+            -o /dev/null \
+            "https://api.heroku.com/apps/${HEROKU_APP_NAME}/config-vars"
+          echo "Heroku Config Vars synchronized."
