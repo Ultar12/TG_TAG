@@ -36,8 +36,11 @@ def authorize() -> Credentials:
         )
     if TOKEN_FILE.is_file():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+    if creds and creds.refresh_token and (creds.expired or not creds.token):
+        try:
+            creds.refresh(Request())
+        except Exception as exc:
+            raise RuntimeError(f"YouTube refresh-token exchange failed: {exc}") from exc
     if not creds or not creds.valid:
         raise RuntimeError(
             "YOUTUBE_REFRESH_TOKEN is missing or invalid. Complete the browser OAuth setup again "
