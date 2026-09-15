@@ -95,6 +95,19 @@ def _youtube_post_images_sync(source_url: str) -> tuple[list[str], str]:
                 candidates.append(candidate)
     # Community post image URLs are commonly embedded as thumbnail objects.
     candidates = [url for url in candidates if "/s68-" not in url and "=s48-" not in url]
+    unique_candidates = []
+    seen_images = set()
+    for image_url in candidates:
+        # YouTube/Google frequently embeds the same photo several times with
+        # different resize suffixes, for example =w1200 or =s2048. Treat those
+        # variants as one image while retaining the largest-looking URL.
+        canonical = re.split(r"[?&]", image_url, maxsplit=1)[0]
+        canonical = re.sub(r"=[^/]*$", "", canonical)
+        if canonical in seen_images:
+            continue
+        seen_images.add(canonical)
+        unique_candidates.append(image_url)
+    candidates = unique_candidates
     if not candidates:
         raise MediaAPIError("No images were found in this YouTube Community post.")
     title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.IGNORECASE)
