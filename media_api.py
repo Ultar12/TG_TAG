@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import http.cookiejar
 import json
 import logging
 import os
@@ -44,6 +45,50 @@ MEDIA_USER_AGENT = (
 
 class MediaAPIError(RuntimeError):
     pass
+
+
+def _is_youtube_community_post_url(source_url: str) -> bool:
+    parsed = urlparse(source_url)
+    host = parsed.netloc.lower().split(":", 1)[0].removeprefix("www.")
+    return host in {"youtube.com", "m.youtube.com"} and "/post/" in parsed.path.lower()
+
+
+def _youtube_post_images_sync(source_url: str) -> tuple[list[str], str]:
+    cookie_path = os.environ.get("YTDL_COOKIES_FILE", "").strip()
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": MEDIA_USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.youtube.com/",
+    })
+    if cookie_path and os.path.isfile(cookie_path):
+        jar = http.cookiejar.MozillaCookieJar(cookie_path)
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies.update(jar)
+        except Exception as exc:
+            logger.warning("Could not load YouTube cookies for Community post: %s", exc)
+    response = session.get(source_url, timeout=45)
+    response.raise_for_status()
+    html = response.text
+    if "Sign in to confirm" in html or "This content isn't available" in html:
+        raise MediaAPIError("YouTube Community post requires valid cookies or is unavailable.")
+    candidates = []
+    for raw_url in re.findall(r'(?:(?:https?:)?\\?/\\?/)[^"\\s<>]+', html):
+        candidate = raw_url.replace("\\u0026", "&").replace("\\/", "/")
+        if candidate.startswith("//"):
+            candidate = "https:" + candidate
+        if any(token in candidate.lower() for token in ("yt3.ggpht.com", "googleusercontent.com", "ggpht.com")) and re.search(r"\.(?:jpg|jpeg|png|webp)(?:[?&]|$)", candidate, re.IGNORECASE):
+            candidate = candidate.replace("\\u0026", "&")
+            if candidate not in candidates:
+                candidates.append(candidate)
+    # Community post image URLs are commonly embedded as thumbnail objects.
+    candidates = [url for url in candidates if "/s68-" not in url and "=s48-" not in url]
+    if not candidates:
+        raise MediaAPIError("No images were found in this YouTube Community post.")
+    title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.IGNORECASE)
+    caption = title_match.group(1).strip() if title_match else "YouTube Community post"
+    return candidates[:20], caption
 
 
 def _safe_url(value: Any) -> str:
@@ -1088,6 +1133,17 @@ class DownloadHandler(_BaseHandler):
         url = _safe_url(raw_url)
         host = urlparse(url).netloc.lower()
         try:
+            if _is_youtube_community_post_url(url):
+                image_urls, caption = await asyncio.to_thread(_youtube_post_images_sync, url)
+                self.set_header("Content-Type", "application/json")
+                self.write(json.dumps({
+                    "type": "images",
+                    "urls": image_urls,
+                    "caption": caption,
+                    "source": "youtube-community-post",
+                }))
+                return
+
             if _is_pinterest_url(url):
                 pinterest_type, pinterest_payload = await asyncio.to_thread(
                     _download_pinterest_sync,

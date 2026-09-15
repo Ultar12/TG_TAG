@@ -2626,6 +2626,7 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                 await feedback.edit_text("Download failed. No media was found.")
                 return
             caption = str(data.get("caption") or "").strip() or None
+            image_referer = "https://www.youtube.com/" if data.get("source") == "youtube-community-post" else "https://www.tiktok.com/"
             # Telegram permits 2–10 photos per media group. Send every URL
             # returned by the API instead of silently discarding urls[1:].
             valid_urls = [item for item in urls if isinstance(item, str) and item.strip()]
@@ -2636,7 +2637,7 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                 image_response = await asyncio.to_thread(
                     requests.get,
                     valid_urls[0],
-                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": image_referer},
                     timeout=90,
                 )
                 image_response.raise_for_status()
@@ -2650,7 +2651,7 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                             image_response = await asyncio.to_thread(
                                 requests.get,
                                 image_url,
-                                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+                                headers={"User-Agent": "Mozilla/5.0", "Referer": image_referer},
                                 timeout=90,
                             )
                             image_response.raise_for_status()
@@ -2710,7 +2711,7 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
         await feedback.edit_text("Download failed. The request timed out.")
     except Exception as exc:
         logger.error("Telegram media API delivery failed for %s: %s", url, exc)
-        await feedback.edit_text("Download failed. Please try again.")
+        await feedback.edit_text(f"Download failed: {str(exc)[:500]}")
 
 
 async def handle_media_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, feedback=None) -> None:
