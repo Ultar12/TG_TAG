@@ -74,6 +74,14 @@ def _youtube_post_images_sync(source_url: str) -> tuple[list[str], str]:
     if "Sign in to confirm" in html or "This content isn't available" in html:
         raise MediaAPIError("YouTube Community post requires valid cookies or is unavailable.")
     candidates = []
+
+    def original_size_url(image_url: str) -> str:
+        # Google/YouTube image CDNs accept =s0 for the source-size image. Strip
+        # an existing resize suffix first, while preserving the image path.
+        base, _, query = image_url.partition("?")
+        if "=" in base:
+            base = base.split("=", 1)[0]
+        return f"{base}=s0" + (f"?{query}" if query else "")
     url_patterns = [
         r'"(?:url|imageUrl|thumbnailUrl)"\s*:\s*"(https?[^"\\]+)"',
         r'(?:(?:https?:)?\\?/\\?/)[^"\\s<>]+',
@@ -91,6 +99,7 @@ def _youtube_post_images_sync(source_url: str) -> tuple[list[str], str]:
         is_avatar_size = any(token in lower_candidate for token in ("=s48", "=s68", "=w40", "=w48", "=w68"))
         if is_image_host and has_image_hint and not is_avatar_size:
             candidate = candidate.replace("\\u0026", "&")
+            candidate = original_size_url(candidate)
             if candidate not in candidates:
                 candidates.append(candidate)
     # Community post image URLs are commonly embedded as thumbnail objects.
@@ -102,7 +111,7 @@ def _youtube_post_images_sync(source_url: str) -> tuple[list[str], str]:
         # different resize suffixes, for example =w1200 or =s2048. Treat those
         # variants as one image while retaining the largest-looking URL.
         canonical = re.split(r"[?&]", image_url, maxsplit=1)[0]
-        canonical = re.sub(r"=[^/]*$", "", canonical)
+        canonical = re.sub(r"=s0$", "", canonical)
         if canonical in seen_images:
             continue
         seen_images.add(canonical)

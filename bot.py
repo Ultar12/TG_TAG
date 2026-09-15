@@ -2635,6 +2635,7 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                 return
             caption = str(data.get("caption") or "").strip() or None
             image_referer = "https://www.youtube.com/" if data.get("source") == "youtube-community-post" else "https://www.tiktok.com/"
+            preserve_original = data.get("source") == "youtube-community-post"
             # Telegram permits 2–10 photos per media group. Send every URL
             # returned by the API instead of silently discarding urls[1:].
             valid_urls = [item for item in urls if isinstance(item, str) and item.strip()]
@@ -2649,7 +2650,15 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                     timeout=90,
                 )
                 image_response.raise_for_status()
-                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=image_response.content, caption=caption)
+                if preserve_original:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=image_response.content,
+                        filename="youtube-community-image.jpg",
+                        caption=caption,
+                    )
+                else:
+                    await context.bot.send_photo(chat_id=update.effective_chat.id, photo=image_response.content, caption=caption)
             else:
                 for batch_start in range(0, len(valid_urls), 10):
                     batch_urls = valid_urls[batch_start:batch_start + 10]
@@ -2668,7 +2677,16 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
                         except requests.RequestException as image_error:
                             logger.warning("Skipping inaccessible TikTok gallery image: %s", image_error)
                     if not downloaded_images:
-                        raise RuntimeError("TikTok gallery images could not be downloaded")
+                        raise RuntimeError("Gallery images could not be downloaded")
+                    if preserve_original:
+                        for index, image_bytes in enumerate(downloaded_images):
+                            await context.bot.send_document(
+                                chat_id=update.effective_chat.id,
+                                document=image_bytes,
+                                filename=f"youtube-community-image-{batch_start + index + 1}.jpg",
+                                caption=caption if batch_start + index + 1 == len(valid_urls) else None,
+                            )
+                        continue
                     if len(downloaded_images) == 1:
                         await context.bot.send_photo(
                             chat_id=update.effective_chat.id,
