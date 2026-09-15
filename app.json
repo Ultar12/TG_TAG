@@ -157,7 +157,7 @@
     },
     "YOUTUBE_LISTENER_INTERVAL": {
       "description": "Seconds between YouTube channel checks.",
-      "value": "90",
+      "value": "3600",
       "required": false
     }
   },
