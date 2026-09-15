@@ -145,6 +145,20 @@
       "description": "Maximum duration for a livestream recording. Defaults to 180 minutes.",
       "value": "180",
       "required": false
+    },
+    "YOUTUBE_LISTENER_CHANNEL": {
+      "description": "YouTube channel monitored by the listener worker.",
+      "value": "@helenefischer",
+      "required": false
+    },
+    "YOUTUBE_LISTENER_CHAT_ID": {
+      "description": "Telegram chat ID receiving new YouTube uploads; defaults to ADMIN_ID.",
+      "required": false
+    },
+    "YOUTUBE_LISTENER_INTERVAL": {
+      "description": "Seconds between YouTube channel checks.",
+      "value": "90",
+      "required": false
     }
   },
   "formation": {
@@ -152,7 +166,7 @@
       "quantity": 1
     },
     "worker": {
-      "quantity": 0
+      "quantity": 1
     }
   }
 }
