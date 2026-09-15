@@ -40,6 +40,7 @@ from session_generator import build_session_conversation, configure_session_conv
 from telethon import TelegramClient, utils
 from telethon import events
 from telethon.sessions import StringSession
+from googleapiclient.discovery import build
 
 from sqlalchemy import create_engine, Column, String, text
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -47,6 +48,7 @@ from sqlalchemy.exc import OperationalError, IntegrityError
 from sqlalchemy.types import BigInteger
 import yt_dlp
 from media_api import run_combined_webhook
+from youtube_uploader import authorize, upload_video
 
 from prettytable import PrettyTable
 
@@ -1700,6 +1702,71 @@ async def channel_playlist_command(update: Update, context: ContextTypes.DEFAULT
     except Exception as exc:
         logger.exception("Channel playlist error: %s", exc)
         await feedback.edit_text("Could not read that channel playlist. Check the URL and try again.")
+
+
+async def youtube_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Verify the configured YouTube OAuth account without uploading anything."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Only the bot administrator can test YouTube access.")
+        return
+    feedback = await update.message.reply_text("Testing YouTube authorization...")
+    try:
+        def get_channel():
+            youtube = build("youtube", "v3", credentials=authorize())
+            response = youtube.channels().list(part="snippet,statistics", mine=True).execute()
+            items = response.get("items", [])
+            if not items:
+                raise RuntimeError("The authorized Google account has no YouTube channel.")
+            return items[0]
+
+        channel = await asyncio.to_thread(get_channel)
+        snippet = channel.get("snippet", {})
+        statistics = channel.get("statistics", {})
+        title = snippet.get("title", "Unknown channel")
+        subscribers = statistics.get("subscriberCount", "hidden")
+        await feedback.edit_text(
+            "YouTube access is working.\n"
+            f"Channel: {title}\n"
+            f"Subscribers: {subscribers}\n"
+            "No video was uploaded."
+        )
+    except Exception as exc:
+        logger.exception("YouTube authorization test failed: %s", exc)
+        await feedback.edit_text(f"YouTube access test failed: {str(exc)[:700]}")
+
+
+async def post_replied_video_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Upload a Telegram video by replying to it with /post."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Only the bot administrator can upload to YouTube.")
+        return
+    replied = update.message.reply_to_message
+    if not replied:
+        await update.message.reply_text("Reply to a Telegram video with /post [title].")
+        return
+    media = replied.video or replied.document
+    if not media or (replied.document and not (replied.document.mime_type or "").startswith("video/")):
+        await update.message.reply_text("Reply to a Telegram video file with /post [title].")
+        return
+    title = " ".join(context.args).strip() or (replied.caption or "Telegram video").splitlines()[0][:100]
+    feedback = await update.message.reply_text("Downloading the replied video...")
+    temp_dir = Path(DOWNLOAD_DIR) / f"youtube_post_{uuid.uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    path = temp_dir / "upload.mp4"
+    try:
+        telegram_file = await context.bot.get_file(media.file_id)
+        await telegram_file.download_to_drive(custom_path=str(path))
+        await feedback.edit_text("Uploading the video to YouTube...")
+        description = replied.caption or ""
+        result = await asyncio.to_thread(upload_video, path, title, description)
+        video_id = result.get("id", "")
+        link = f"https://youtu.be/{video_id}" if video_id else ""
+        await feedback.edit_text(f"YouTube upload complete.\n{link}".strip())
+    except Exception as exc:
+        logger.exception("Reply-to-video YouTube upload failed: %s", exc)
+        await feedback.edit_text(f"YouTube upload failed: {str(exc)[:700]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 async def _record_live_job(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, duration_minutes: int | None, from_start: bool) -> None:
     chat_id = update.effective_chat.id
@@ -3458,6 +3525,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("language", language_command),
         CommandHandler("recordlive", record_live_command), CommandHandler("stoplive", stop_live_command),
         CommandHandler("playlist", channel_playlist_command),
+        CommandHandler("ytstatus", youtube_status_command), CommandHandler("post", post_replied_video_command),
         CommandHandler("nosubs", remove_subtitles_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
