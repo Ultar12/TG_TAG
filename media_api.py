@@ -1176,7 +1176,9 @@ class YouTubeOAuthStartHandler(tornado.web.RequestHandler):
         setup_token = os.environ.get("YOUTUBE_OAUTH_SETUP_TOKEN", "").strip()
         if not setup_token or self.get_query_argument("token", "") != setup_token:
             raise tornado.web.HTTPError(403, reason="Invalid OAuth setup token.")
-        redirect_uri = self.request.protocol + "://" + self.request.host + "/youtube/oauth/callback"
+        forwarded_proto = self.request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+        scheme = "https" if forwarded_proto == "https" or self.request.host.endswith("herokuapp.com") else self.request.protocol
+        redirect_uri = scheme + "://" + self.request.host + "/youtube/oauth/callback"
         config = _youtube_oauth_config()
         config["web"]["redirect_uris"] = [redirect_uri]
         flow = Flow.from_client_config(config, scopes=[YOUTUBE_UPLOAD_SCOPE], redirect_uri=redirect_uri)
