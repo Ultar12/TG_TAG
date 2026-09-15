@@ -1154,6 +1154,7 @@ class HealthHandler(tornado.web.RequestHandler):
 
 
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_OAUTH_STATES: dict[str, str] = {}
 
 
@@ -1181,7 +1182,11 @@ class YouTubeOAuthStartHandler(tornado.web.RequestHandler):
         redirect_uri = scheme + "://" + self.request.host + "/youtube/oauth/callback"
         config = _youtube_oauth_config()
         config["web"]["redirect_uris"] = [redirect_uri]
-        flow = Flow.from_client_config(config, scopes=[YOUTUBE_UPLOAD_SCOPE], redirect_uri=redirect_uri)
+        flow = Flow.from_client_config(
+            config,
+            scopes=[YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE],
+            redirect_uri=redirect_uri,
+        )
         authorization_url, state = flow.authorization_url(
             access_type="offline", include_granted_scopes="true", prompt="consent"
         )
@@ -1205,7 +1210,12 @@ class YouTubeOAuthCallbackHandler(tornado.web.RequestHandler):
         try:
             config = _youtube_oauth_config()
             config["web"]["redirect_uris"] = [redirect_uri]
-            flow = Flow.from_client_config(config, scopes=[YOUTUBE_UPLOAD_SCOPE], state=state, redirect_uri=redirect_uri)
+            flow = Flow.from_client_config(
+                config,
+                scopes=[YOUTUBE_UPLOAD_SCOPE, YOUTUBE_READONLY_SCOPE],
+                state=state,
+                redirect_uri=redirect_uri,
+            )
             await asyncio.to_thread(flow.fetch_token, code=code)
             refresh_token = flow.credentials.refresh_token
             if not refresh_token:

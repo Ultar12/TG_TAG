@@ -13,7 +13,10 @@ from googleapiclient.http import MediaFileUpload
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+]
 TOKEN_FILE = Path(os.environ.get("YOUTUBE_TOKEN_FILE", "youtube_token.json"))
 CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET", "").strip()
