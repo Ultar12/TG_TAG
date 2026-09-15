@@ -2611,7 +2611,15 @@ async def download_via_media_api(update: Update, context: ContextTypes.DEFAULT_T
         )
         if response.status_code >= 400:
             logger.warning("TG_TAG media API returned HTTP %s for %s", response.status_code, url)
-            await feedback.edit_text(media_api_error(response))
+            try:
+                body = response.json()
+                detail = str(body.get("error") or body.get("message") or "").strip()
+            except (ValueError, TypeError):
+                detail = response.text.strip()
+            await feedback.edit_text(
+                f"Download failed (HTTP {response.status_code}).\n\n"
+                f"Details: {detail[:1500] or media_api_error(response)}"
+            )
             return
 
         content_type = response.headers.get("Content-Type", "").lower()

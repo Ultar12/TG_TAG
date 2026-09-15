@@ -74,11 +74,22 @@ def _youtube_post_images_sync(source_url: str) -> tuple[list[str], str]:
     if "Sign in to confirm" in html or "This content isn't available" in html:
         raise MediaAPIError("YouTube Community post requires valid cookies or is unavailable.")
     candidates = []
-    for raw_url in re.findall(r'(?:(?:https?:)?\\?/\\?/)[^"\\s<>]+', html):
+    url_patterns = [
+        r'"(?:url|imageUrl|thumbnailUrl)"\s*:\s*"(https?[^"\\]+)"',
+        r'(?:(?:https?:)?\\?/\\?/)[^"\\s<>]+',
+    ]
+    raw_urls = []
+    for pattern in url_patterns:
+        raw_urls.extend(re.findall(pattern, html, re.IGNORECASE))
+    for raw_url in raw_urls:
         candidate = raw_url.replace("\\u0026", "&").replace("\\/", "/")
         if candidate.startswith("//"):
             candidate = "https:" + candidate
-        if any(token in candidate.lower() for token in ("yt3.ggpht.com", "googleusercontent.com", "ggpht.com")) and re.search(r"\.(?:jpg|jpeg|png|webp)(?:[?&]|$)", candidate, re.IGNORECASE):
+        lower_candidate = candidate.lower()
+        is_image_host = any(token in lower_candidate for token in ("yt3.ggpht.com", "googleusercontent.com", "ggpht.com"))
+        has_image_hint = any(token in lower_candidate for token in ("=s0", "=w", "=h", "=s", ".jpg", ".jpeg", ".png", ".webp"))
+        is_avatar_size = any(token in lower_candidate for token in ("=s48", "=s68", "=w40", "=w48", "=w68"))
+        if is_image_host and has_image_hint and not is_avatar_size:
             candidate = candidate.replace("\\u0026", "&")
             if candidate not in candidates:
                 candidates.append(candidate)
