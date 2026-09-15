@@ -1786,6 +1786,55 @@ async def post_replied_video_command(update: Update, context: ContextTypes.DEFAU
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+
+async def handle_youtube_listener_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Approve or reject a video detected by the YouTube listener."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("Only the bot administrator can decide.", show_alert=True)
+        return
+    action, _video_id = query.data.split(":", 1)
+    if action == "yt_reject":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("Upload rejected. The detected video was not uploaded.")
+        return
+    source_message = query.message
+    media = source_message.video or source_message.document
+    if not media:
+        await query.message.reply_text("Upload approval failed: the alert no longer contains the video file.")
+        return
+    title = (source_message.caption or "New YouTube video").splitlines()[0][:100]
+    source_url = ""
+    for line in (source_message.caption or "").splitlines():
+        if line.startswith("https://youtu"):
+            source_url = line.strip()
+            break
+    await query.edit_message_reply_markup(reply_markup=None)
+    feedback = await query.message.reply_text("Approval received. Uploading to YouTube...")
+    temp_dir = Path(DOWNLOAD_DIR) / f"youtube_listener_{uuid.uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    path = temp_dir / "approved.mp4"
+    try:
+        telegram_file = await context.bot.get_file(media.file_id)
+        await telegram_file.download_to_drive(custom_path=str(path))
+        rewritten_description = (
+            f"A new video update from the monitored channel.\n\n"
+            f"Original title: {title}\n\n"
+            f"Source: {source_url or 'YouTube'}"
+        )
+        result = await asyncio.to_thread(
+            upload_video, path, title, rewritten_description, None, source_url
+        )
+        video_id = result.get("id", "")
+        link = f"https://youtu.be/{video_id}" if video_id else ""
+        await feedback.edit_text(f"Approved upload complete.\n{link}".strip())
+    except Exception as exc:
+        logger.exception("Approved listener upload failed: %s", exc)
+        await feedback.edit_text(f"Approved upload failed: {str(exc)[:700]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 async def _record_live_job(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, duration_minutes: int | None, from_start: bool) -> None:
     chat_id = update.effective_chat.id
     temp_dir = os.path.join(DOWNLOAD_DIR, f"live_{uuid.uuid4().hex}")
@@ -3572,6 +3621,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CallbackQueryHandler(handle_play_cancel, pattern="^play_cancel"),
         CallbackQueryHandler(handle_audio_download, pattern="^dl_audio:"),
         CallbackQueryHandler(handle_video_download, pattern="^dl_video:"),
+        CallbackQueryHandler(handle_youtube_listener_decision, pattern="^yt_(approve|reject):"),
         CallbackQueryHandler(handle_tiktok_count_selection, pattern="^tiktok_count:"),
         CallbackQueryHandler(handle_novel_download, pattern="^novel_dl:"),
         CallbackQueryHandler(handle_voice_consent, pattern="^voice_consent:"),

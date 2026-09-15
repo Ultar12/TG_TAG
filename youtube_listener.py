@@ -9,7 +9,6 @@ from pathlib import Path
 
 import requests
 import yt_dlp
-from youtube_uploader import upload_video
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - youtube-listener - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -21,7 +20,6 @@ CHANNEL = os.environ.get("YOUTUBE_LISTENER_CHANNEL", "@helenefischer").strip()
 INTERVAL = max(30, int(os.environ.get("YOUTUBE_LISTENER_INTERVAL", "3600")))
 STATE_FILE = Path(os.environ.get("YOUTUBE_LISTENER_STATE_FILE", "/tmp/youtube-listener-state.json"))
 COOKIES = os.environ.get("YTDL_COOKIES_FILE", "").strip()
-AUTO_UPLOAD = os.environ.get("YOUTUBE_AUTO_UPLOAD", "false").strip().lower() in {"1", "true", "yes"}
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
 
 
@@ -88,13 +86,19 @@ def forward_video(video):
     try:
         title = str(video.get("title") or "New YouTube video")
         url = video.get("webpage_url") or f"https://www.youtube.com/watch?v={video['id']}"
-        caption = f"{title}\n\n{url}"[:1024]
+        caption = f"New video detected: {title}\n\nSource: {url}"[:1024]
+        keyboard = json.dumps({
+            "inline_keyboard": [[
+                {"text": "Upload", "callback_data": f"yt_approve:{video['id']}"},
+                {"text": "Reject", "callback_data": f"yt_reject:{video['id']}"},
+            ]]
+        })
         with path.open("rb") as media:
-            bot_api("sendVideo", {"chat_id": CHAT_ID, "caption": caption, "supports_streaming": "true"}, {"video": media})
-        if AUTO_UPLOAD:
-            description = str(video.get("description") or "")
-            upload_video(path, title, description, source_url=url)
-            logger.info("Uploaded %s to the configured YouTube channel", video.get("id"))
+            bot_api(
+                "sendVideo",
+                {"chat_id": CHAT_ID, "caption": caption, "supports_streaming": "true", "reply_markup": keyboard},
+                {"video": media},
+            )
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
