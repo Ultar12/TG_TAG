@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import http.cookiejar
 import json
 import logging
@@ -26,6 +27,7 @@ from tornado.httpserver import HTTPServer
 import yt_dlp
 from telegram import Update
 from telegram.ext import Application
+from google_auth_oauthlib.flow import Flow
 
 logger = logging.getLogger(__name__)
 MAX_API_FILE_BYTES = 2 * 1024 * 1024 * 1024
@@ -1151,6 +1153,73 @@ class HealthHandler(tornado.web.RequestHandler):
         self.write({"status": "ok", "service": "TG_TAG"})
 
 
+YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+YOUTUBE_OAUTH_STATES: dict[str, str] = {}
+
+
+def _youtube_oauth_config() -> dict[str, Any]:
+    client_id = os.environ.get("YOUTUBE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise MediaAPIError("YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET are not configured.")
+    return {"web": {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": [],
+    }}
+
+
+class YouTubeOAuthStartHandler(tornado.web.RequestHandler):
+    def get(self) -> None:
+        setup_token = os.environ.get("YOUTUBE_OAUTH_SETUP_TOKEN", "").strip()
+        if not setup_token or self.get_query_argument("token", "") != setup_token:
+            raise tornado.web.HTTPError(403, reason="Invalid OAuth setup token.")
+        redirect_uri = self.request.protocol + "://" + self.request.host + "/youtube/oauth/callback"
+        config = _youtube_oauth_config()
+        config["web"]["redirect_uris"] = [redirect_uri]
+        flow = Flow.from_client_config(config, scopes=[YOUTUBE_UPLOAD_SCOPE], redirect_uri=redirect_uri)
+        authorization_url, state = flow.authorization_url(
+            access_type="offline", include_granted_scopes="true", prompt="consent"
+        )
+        YOUTUBE_OAUTH_STATES[state] = redirect_uri
+        self.redirect(authorization_url)
+
+
+class YouTubeOAuthCallbackHandler(tornado.web.RequestHandler):
+    async def get(self) -> None:
+        state = self.get_query_argument("state", "")
+        redirect_uri = YOUTUBE_OAUTH_STATES.pop(state, "")
+        if not redirect_uri:
+            raise tornado.web.HTTPError(400, reason="OAuth state expired. Start authorization again.")
+        error = self.get_query_argument("error", "")
+        if error:
+            self.write(f"YouTube authorization was cancelled: {html.escape(error)}")
+            return
+        code = self.get_query_argument("code", "")
+        if not code:
+            raise tornado.web.HTTPError(400, reason="Google did not return an authorization code.")
+        try:
+            config = _youtube_oauth_config()
+            config["web"]["redirect_uris"] = [redirect_uri]
+            flow = Flow.from_client_config(config, scopes=[YOUTUBE_UPLOAD_SCOPE], state=state, redirect_uri=redirect_uri)
+            await asyncio.to_thread(flow.fetch_token, code=code)
+            refresh_token = flow.credentials.refresh_token
+            if not refresh_token:
+                raise MediaAPIError("Google did not return a refresh token. Run authorization again with consent.")
+            self.set_header("Content-Type", "text/html; charset=utf-8")
+            self.write(
+                "<h2>YouTube authorization complete</h2>"
+                "<p>Copy this value into Heroku Config Vars as <b>YOUTUBE_REFRESH_TOKEN</b>:</p>"
+                f"<textarea rows='6' cols='100'>{html.escape(refresh_token)}</textarea>"
+                "<p>Then set YOUTUBE_AUTO_UPLOAD=true. Do not publish this token or commit it to GitHub.</p>"
+            )
+        except Exception as exc:
+            logger.exception("YouTube OAuth callback failed")
+            raise tornado.web.HTTPError(502, reason=str(exc)) from exc
+
+
 class DownloadHandler(_BaseHandler):
     async def get(self) -> None:
         await self._handle(self.get_query_argument("url", default=""))
@@ -1543,6 +1612,8 @@ async def _run_combined_webhook(
     tornado_app = tornado.web.Application(
         [
             (r"/ai/?", AIWebSocketHandler),
+            (r"/youtube/oauth/start/?", YouTubeOAuthStartHandler),
+            (r"/youtube/oauth/callback/?", YouTubeOAuthCallbackHandler),
             (rf"/{webhook_path}/?", TelegramWebhookHandler, {"bot": application.bot, "update_queue": application.update_queue, "secret_token": webhook_secret}),
             (r"/api/download/?", DownloadHandler, {"common_options": common_options}),
             (r"/api/video-to-photos/?", VideoPhotosHandler, {"common_options": common_options}),

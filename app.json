@@ -181,6 +181,10 @@
     "YOUTUBE_REFRESH_TOKEN": {
       "description": "Google OAuth refresh token for the authorized destination YouTube channel.",
       "required": false
+    },
+    "YOUTUBE_OAUTH_SETUP_TOKEN": {
+      "description": "Secret token required to open the browser-based YouTube OAuth setup page.",
+      "required": false
     }
   },
   "formation": {
