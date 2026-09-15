@@ -4,6 +4,7 @@ __pycache__/
 downloads/
 .pytest_cache/
 .venv/
+.env
 
 # Local logs
 *.log
