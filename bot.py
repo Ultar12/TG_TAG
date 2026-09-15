@@ -40,7 +40,6 @@ from session_generator import build_session_conversation, configure_session_conv
 from telethon import TelegramClient, utils
 from telethon import events
 from telethon.sessions import StringSession
-from googleapiclient.discovery import build
 
 from sqlalchemy import create_engine, Column, String, text
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -1705,29 +1704,16 @@ async def channel_playlist_command(update: Update, context: ContextTypes.DEFAULT
 
 
 async def youtube_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Verify the configured YouTube OAuth account without uploading anything."""
+    """Verify the configured YouTube upload authorization without uploading anything."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Only the bot administrator can test YouTube access.")
         return
     feedback = await update.message.reply_text("Testing YouTube authorization...")
     try:
-        def get_channel():
-            youtube = build("youtube", "v3", credentials=authorize())
-            response = youtube.channels().list(part="snippet,statistics", mine=True).execute()
-            items = response.get("items", [])
-            if not items:
-                raise RuntimeError("The authorized Google account has no YouTube channel.")
-            return items[0]
-
-        channel = await asyncio.to_thread(get_channel)
-        snippet = channel.get("snippet", {})
-        statistics = channel.get("statistics", {})
-        title = snippet.get("title", "Unknown channel")
-        subscribers = statistics.get("subscriberCount", "hidden")
+        await asyncio.to_thread(authorize)
         await feedback.edit_text(
-            "YouTube access is working.\n"
-            f"Channel: {title}\n"
-            f"Subscribers: {subscribers}\n"
+            "YouTube upload access is working.\n"
+            "The OAuth token was refreshed successfully.\n"
             "No video was uploaded."
         )
     except Exception as exc:
