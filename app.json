@@ -169,6 +169,18 @@
       "description": "Privacy for automatic uploads: private, unlisted, or public.",
       "value": "private",
       "required": false
+    },
+    "YOUTUBE_CLIENT_ID": {
+      "description": "Google OAuth client ID for the destination YouTube channel.",
+      "required": false
+    },
+    "YOUTUBE_CLIENT_SECRET": {
+      "description": "Google OAuth client secret for the destination YouTube channel.",
+      "required": false
+    },
+    "YOUTUBE_REFRESH_TOKEN": {
+      "description": "Google OAuth refresh token for the authorized destination YouTube channel.",
+      "required": false
     }
   },
   "formation": {
