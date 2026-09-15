@@ -5,11 +5,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 TOKEN_FILE = Path(os.environ.get("YOUTUBE_TOKEN_FILE", "youtube_token.json"))
