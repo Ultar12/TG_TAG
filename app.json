@@ -151,10 +151,6 @@
       "value": "@helenefischer",
       "required": false
     },
-    "YOUTUBE_LISTENER_CHAT_ID": {
-      "description": "Telegram chat ID receiving new YouTube uploads; defaults to ADMIN_ID.",
-      "required": false
-    },
     "YOUTUBE_LISTENER_INTERVAL": {
       "description": "Seconds between YouTube channel checks.",
       "value": "3600",

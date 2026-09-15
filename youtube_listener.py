@@ -15,9 +15,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - youtube-listener -
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-CHAT_ID = os.environ.get("YOUTUBE_LISTENER_CHAT_ID", os.environ.get("ADMIN_ID", "")).strip()
+ADMIN_ID = os.environ.get("ADMIN_ID", "").strip()
+CHAT_ID = ADMIN_ID
 CHANNEL = os.environ.get("YOUTUBE_LISTENER_CHANNEL", "@helenefischer").strip()
-INTERVAL = max(30, int(os.environ.get("YOUTUBE_LISTENER_INTERVAL", "90")))
+INTERVAL = max(30, int(os.environ.get("YOUTUBE_LISTENER_INTERVAL", "3600")))
 STATE_FILE = Path(os.environ.get("YOUTUBE_LISTENER_STATE_FILE", "/tmp/youtube-listener-state.json"))
 COOKIES = os.environ.get("YTDL_COOKIES_FILE", "").strip()
 AUTO_UPLOAD = os.environ.get("YOUTUBE_AUTO_UPLOAD", "false").strip().lower() in {"1", "true", "yes"}
@@ -119,8 +120,8 @@ def poll_once(state):
 
 
 def main():
-    if not BOT_TOKEN or not CHAT_ID:
-        raise SystemExit("BOT_TOKEN and ADMIN_ID or YOUTUBE_LISTENER_CHAT_ID are required")
+    if not BOT_TOKEN or not ADMIN_ID:
+        raise SystemExit("BOT_TOKEN and ADMIN_ID are required")
     logger.info("Monitoring %s every %ss", CHANNEL, INTERVAL)
     state = load_state()
     while True:
