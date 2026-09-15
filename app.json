@@ -159,6 +159,16 @@
       "description": "Seconds between YouTube channel checks.",
       "value": "3600",
       "required": false
+    },
+    "YOUTUBE_AUTO_UPLOAD": {
+      "description": "Upload detected videos to the authorized YouTube channel. Disabled by default.",
+      "value": "false",
+      "required": false
+    },
+    "YOUTUBE_UPLOAD_PRIVACY": {
+      "description": "Privacy for automatic uploads: private, unlisted, or public.",
+      "value": "private",
+      "required": false
     }
   },
   "formation": {

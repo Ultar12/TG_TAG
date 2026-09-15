@@ -9,6 +9,7 @@ from pathlib import Path
 
 import requests
 import yt_dlp
+from youtube_uploader import upload_video
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - youtube-listener - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ CHANNEL = os.environ.get("YOUTUBE_LISTENER_CHANNEL", "@helenefischer").strip()
 INTERVAL = max(30, int(os.environ.get("YOUTUBE_LISTENER_INTERVAL", "90")))
 STATE_FILE = Path(os.environ.get("YOUTUBE_LISTENER_STATE_FILE", "/tmp/youtube-listener-state.json"))
 COOKIES = os.environ.get("YTDL_COOKIES_FILE", "").strip()
+AUTO_UPLOAD = os.environ.get("YOUTUBE_AUTO_UPLOAD", "false").strip().lower() in {"1", "true", "yes"}
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
 
 
@@ -88,6 +90,10 @@ def forward_video(video):
         caption = f"{title}\n\n{url}"[:1024]
         with path.open("rb") as media:
             bot_api("sendVideo", {"chat_id": CHAT_ID, "caption": caption, "supports_streaming": "true"}, {"video": media})
+        if AUTO_UPLOAD:
+            description = str(video.get("description") or "")
+            upload_video(path, title, description, source_url=url)
+            logger.info("Uploaded %s to the configured YouTube channel", video.get("id"))
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 

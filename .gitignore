@@ -5,6 +5,8 @@ downloads/
 .pytest_cache/
 .venv/
 .env
+youtube_client_secret.json
+youtube_token.json
 
 # Local logs
 *.log
