@@ -3570,8 +3570,6 @@ CommandHandler("readtext", read_text_from_image_command),
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO, handle_voice_sample))
     application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION | filters.Document.ALL, video_to_photos))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, record_user_message))
-    application.job_queue.run_once(restore_folder_watch, when=2, name="restore-folder-watch")
-    
     port = int(os.environ.get("PORT", "10000"))
     webhook_base_url = (
         os.environ.get("WEBHOOK_URL")
