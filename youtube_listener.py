@@ -61,9 +61,19 @@ def ytdlp_options():
     return options
 
 
+def channel_videos_url(channel):
+    """Return a valid YouTube videos URL for a handle, URL, or channel path."""
+    channel = channel.strip().rstrip("/")
+    if channel.startswith("http://") or channel.startswith("https://"):
+        return channel if channel.endswith("/videos") else f"{channel}/videos"
+    if channel.startswith("/"):
+        return f"https://www.youtube.com{channel}/videos"
+    return f"https://www.youtube.com/{channel}/videos"
+
+
 def list_videos():
     with yt_dlp.YoutubeDL(ytdlp_options()) as ydl:
-        info = ydl.extract_info(f"{CHANNEL.rstrip('/')}/videos", download=False)
+        info = ydl.extract_info(channel_videos_url(CHANNEL), download=False)
     return [entry for entry in (info or {}).get("entries", []) if entry and entry.get("id")]
 
 
