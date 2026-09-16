@@ -9,6 +9,11 @@ from pathlib import Path
 
 import requests
 import yt_dlp
+from dotenv import load_dotenv
+
+# Load the repository-local .env for local development and deployments that
+# include the file. Existing platform environment variables take precedence.
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - youtube-listener - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
