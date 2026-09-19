@@ -104,6 +104,7 @@ telegram_user_client = None
 folder_watch_handler_installed = False
 folder_watch_cooldown: dict[int, float] = {}
 folder_dialog_ids: dict[int, set[int]] = {}
+tiktok_api_lock = asyncio.Lock()
 
 # --- Initial Checks ---
 missing_required = [
@@ -1974,6 +1975,41 @@ async def tiktok_search_command(update: Update, context: ContextTypes.DEFAULT_TY
     # If a query was provided (e.g., /tiktoksearch funny cats), ask for the count directly.
     await ask_for_tiktok_count(update, context, query)
 
+async def tiktok_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Download a TikTok video or slideshow through @tobyg74/tiktok-api-dl."""
+    url = context.args[0].strip() if context.args else ""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not (host == "tiktok.com" or host.endswith(".tiktok.com")):
+        await update.message.reply_text("Usage: /tiktok <TikTok URL>")
+        return
+
+    feedback = await update.message.reply_text("[TikTok] Resolving the link...")
+    worker = Path(__file__).resolve().parent / "tiktok_api_dl.js"
+    async with tiktok_api_lock:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "node",
+                str(worker),
+                url,
+                env=os.environ.copy(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
+            if stderr:
+                logger.debug("TikTok API adapter stderr: %s", stderr.decode(errors="replace")[-1000:])
+            lines = [line for line in stdout.decode(errors="replace").splitlines() if line.strip()]
+            payload = json.loads(lines[-1]) if lines else {}
+            if process.returncode != 0 or not payload.get("ok"):
+                raise RuntimeError(payload.get("error") or "TikTok API returned no usable result.")
+            await send_tiktok_result(update, context, payload["result"], feedback)
+        except asyncio.TimeoutError:
+            await feedback.edit_text("[TikTok] The download timed out. Try the link again later.")
+        except Exception as exc:
+            logger.exception("TikTok package download failed")
+            await feedback.edit_text(f"[TikTok] Download failed: {str(exc)[:300]}")
+
 async def ask_for_tiktok_count(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
     """
     Asks the user how many videos they want to receive for a given search query.
@@ -3594,6 +3630,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("playlist", channel_playlist_command),
         CommandHandler("ytstatus", youtube_status_command), CommandHandler("post", post_replied_video_command),
         CommandHandler("nosubs", remove_subtitles_command),
+        CommandHandler("tiktok", tiktok_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
