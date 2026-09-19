@@ -1,11 +1,12 @@
 services:
   - type: web
     name: tg-tag
-    runtime: docker
+    runtime: python
     branch: main
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
     plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
     maxShutdownDelaySeconds: 60
     envVars:
       - key: BOT_TOKEN
@@ -36,5 +37,31 @@ services:
         sync: false
       - key: GMAIL_APP_PASSWORD
         sync: false
-      - key: YTDL_COOKIES_FILE
-        value: /etc/secrets/cookies_youtube.txt
+      - key: AGENTROUTER_API_KEY
+        sync: false
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELEGRAM_SESSION
+        sync: false
+      - key: WEBHOOK_SECRET_TOKEN
+        sync: false
+      - key: LIVE_MAX_MINUTES
+        value: "180"
+      - key: YOUTUBE_LISTENER_CHANNEL
+        value: "@helenefischer"
+      - key: YOUTUBE_LISTENER_INTERVAL
+        value: "3600"
+      - key: YOUTUBE_AUTO_UPLOAD
+        value: "false"
+      - key: YOUTUBE_UPLOAD_PRIVACY
+        value: private
+      - key: YOUTUBE_CLIENT_ID
+        sync: false
+      - key: YOUTUBE_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_REFRESH_TOKEN
+        sync: false
+      - key: YOUTUBE_OAUTH_SETUP_TOKEN
+        sync: false
