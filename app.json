@@ -49,11 +49,6 @@
       "value": "v1",
       "required": false
     },
-    "PORNSEARCH_DRIVER": {
-      "description": "Optional pornsearch provider driver, defaulting to pornhub.",
-      "value": "pornhub",
-      "required": false
-    },
     "OPENAI_API_KEY": {
       "description": "Optional OpenAI API key for image generation.",
       "required": false

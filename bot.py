@@ -2010,46 +2010,6 @@ async def tiktok_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.exception("TikTok package download failed")
             await feedback.edit_text(f"[TikTok] Download failed: {str(exc)[:300]}")
 
-async def porn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Search adult-video titles and links through the pornsearch npm package."""
-    query = " ".join(context.args).strip()
-    if not query:
-        await update.message.reply_text("Usage: /porn <search terms>")
-        return
-
-    feedback = await update.message.reply_text("[Porn search] Searching...")
-    worker = Path(__file__).resolve().parent / "pornsearch_adapter.js"
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "node",
-            str(worker),
-            query,
-            env=os.environ.copy(),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=45)
-        if stderr:
-            logger.debug("Pornsearch adapter stderr: %s", stderr.decode(errors="replace")[-1000:])
-        lines = [line for line in stdout.decode(errors="replace").splitlines() if line.strip()]
-        payload = json.loads(lines[-1]) if lines else {}
-        if process.returncode != 0 or not payload.get("ok"):
-            raise RuntimeError(payload.get("error") or "Pornsearch returned no results.")
-        results = payload.get("results") or []
-        if not results:
-            await feedback.edit_text("[Porn search] No results found.")
-            return
-        lines = [f"[Porn search] Results for: {query}"]
-        for index, item in enumerate(results, start=1):
-            duration = f" ({item['duration']})" if item.get("duration") else ""
-            lines.append(f"\n{index}. {item.get('title', 'Untitled')}{duration}\n{item['url']}")
-        await feedback.edit_text("\n".join(lines)[:4000])
-    except asyncio.TimeoutError:
-        await feedback.edit_text("[Porn search] The search timed out. Try again later.")
-    except Exception as exc:
-        logger.exception("Pornsearch failed")
-        await feedback.edit_text(f"[Porn search] Failed: {str(exc)[:300]}")
-
 async def ask_for_tiktok_count(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
     """
     Asks the user how many videos they want to receive for a given search query.
@@ -2594,7 +2554,7 @@ async def try_musicaldown_api(url: str, feedback) -> dict:
         logger.error(f"musicaldown API failed: {e}")
         return None
 
-async def send_tiktok_result(update: Update, context: ContextTypes.DEFAULT_TYPE, result: dict, feedback, quiet_progress: bool = False) -> None:
+async def send_tiktok_result(update: Update, context: ContextTypes.DEFAULT_TYPE, result: dict, feedback) -> None:
     """Send TikTok result to user with robust error handling"""
     try:
         if not result or not isinstance(result, dict):
@@ -3671,7 +3631,6 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("ytstatus", youtube_status_command), CommandHandler("post", post_replied_video_command),
         CommandHandler("nosubs", remove_subtitles_command),
         CommandHandler("tiktok", tiktok_command),
-        CommandHandler("porn", porn_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
