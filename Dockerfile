@@ -10,7 +10,6 @@ RUN apt-get update \
         webp \
         tesseract-ocr \
         nodejs \
-        npm \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,8 +21,6 @@ RUN pip install --upgrade pip \
 
 # Include tracked runtime configuration and cookie files from the repository.
 COPY . ./
-
-RUN npm ci --omit=dev
 
 RUN mkdir -p /app/downloads
 

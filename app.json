@@ -36,19 +36,6 @@
       "description": "Numeric Telegram user ID for the bot administrator.",
       "required": true
     },
-    "TIKTOK_COOKIE": {
-      "description": "Optional TikTok cookie for links that require an authenticated request.",
-      "required": false
-    },
-    "TIKTOK_PROXY": {
-      "description": "Optional HTTP or SOCKS proxy for the TikTok downloader.",
-      "required": false
-    },
-    "TIKTOK_API_DL_VERSION": {
-      "description": "Optional downloader version: v1, v2, or v3.",
-      "value": "v1",
-      "required": false
-    },
     "OPENAI_API_KEY": {
       "description": "Optional OpenAI API key for image generation.",
       "required": false
