@@ -401,6 +401,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/movie <title>**: Get information about a movie.\n"
         "**/ytsearch <query>**: Search for YouTube videos.\n"
         "**/play <song name>**: Search and download a song or video.\n"
+        "**/tiktokavatar <profile URL or @handle>**: Download a TikTok profile picture.\n"
         "**/nosubs**: Reply to a video to remove soft subtitle tracks locally.\n"
         "**/tts <text>**: Convert text to speech.\n"
         "**/stt**: Reply to voice, audio, or video to transcribe speech.\n"
@@ -1973,6 +1974,59 @@ async def tiktok_search_command(update: Update, context: ContextTypes.DEFAULT_TY
     
     # If a query was provided (e.g., /tiktoksearch funny cats), ask for the count directly.
     await ask_for_tiktok_count(update, context, query)
+
+async def tiktok_avatar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Download and send the public profile picture for a TikTok account."""
+    supplied = context.args[0].strip() if context.args else ""
+    profile_url = f"https://www.tiktok.com/{supplied}" if supplied.startswith("@") else supplied
+    parsed = urlparse(profile_url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or host not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}
+        or not re.fullmatch(r"/@[A-Za-z0-9._-]+", path)
+    ):
+        await update.message.reply_text("Usage: /tiktokavatar <TikTok profile URL or @handle>")
+        return
+
+    username = path[2:]
+    feedback = await update.message.reply_text(f"Looking up @{username}'s profile picture...")
+    try:
+        response = await asyncio.to_thread(
+            requests.get,
+            f"https://www.tiktok.com/@{username}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        match = re.search(r'"avatarLarger"\s*:\s*"([^"]+)"', response.text)
+        if not match:
+            match = re.search(r'"avatarMedium"\s*:\s*"([^"]+)"', response.text)
+        if not match:
+            raise RuntimeError("TikTok did not expose a public avatar for this profile.")
+        avatar_url = (
+            match.group(1)
+            .replace(r"\u002F", "/")
+            .replace(r"\/", "/")
+            .replace(r"\u0026", "&")
+        )
+        image_response = await asyncio.to_thread(
+            requests.get,
+            avatar_url,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"},
+            timeout=30,
+        )
+        image_response.raise_for_status()
+        if not image_response.content:
+            raise RuntimeError("TikTok returned an empty avatar image.")
+        image = io.BytesIO(image_response.content)
+        image.name = f"{username}_tiktok_avatar.jpg"
+        await feedback.delete()
+        await update.message.reply_photo(photo=image, caption=f"TikTok profile picture: @{username}")
+    except Exception as exc:
+        logger.exception("TikTok avatar download failed for @%s", username)
+        await feedback.edit_text(f"Could not download that TikTok profile picture: {str(exc)[:250]}")
 
 async def ask_for_tiktok_count(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
     """
@@ -3594,6 +3648,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("playlist", channel_playlist_command),
         CommandHandler("ytstatus", youtube_status_command), CommandHandler("post", post_replied_video_command),
         CommandHandler("nosubs", remove_subtitles_command),
+        CommandHandler("tiktokavatar", tiktok_avatar_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]
