@@ -1975,10 +1975,18 @@ async def tiktok_search_command(update: Update, context: ContextTypes.DEFAULT_TY
     # If a query was provided (e.g., /tiktoksearch funny cats), ask for the count directly.
     await ask_for_tiktok_count(update, context, query)
 
-async def tiktok_avatar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def is_tiktok_profile_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    return (
+        parsed.scheme in {"http", "https"}
+        and host in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}
+        and bool(re.fullmatch(r"/@[A-Za-z0-9._-]+", path))
+    )
+
+async def download_tiktok_avatar(update: Update, context: ContextTypes.DEFAULT_TYPE, profile_url: str, feedback=None) -> None:
     """Download and send the public profile picture for a TikTok account."""
-    supplied = context.args[0].strip() if context.args else ""
-    profile_url = f"https://www.tiktok.com/{supplied}" if supplied.startswith("@") else supplied
     parsed = urlparse(profile_url)
     host = (parsed.hostname or "").lower()
     path = parsed.path.rstrip("/")
@@ -1987,11 +1995,10 @@ async def tiktok_avatar_command(update: Update, context: ContextTypes.DEFAULT_TY
         or host not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}
         or not re.fullmatch(r"/@[A-Za-z0-9._-]+", path)
     ):
-        await update.message.reply_text("Usage: /tiktokavatar <TikTok profile URL or @handle>")
-        return
+        raise ValueError("Usage: /tiktokavatar <TikTok profile URL or @handle>")
 
     username = path[2:]
-    feedback = await update.message.reply_text(f"Looking up @{username}'s profile picture...")
+    feedback = feedback or await update.message.reply_text(f"Looking up @{username}'s profile picture...")
     try:
         response = await asyncio.to_thread(
             requests.get,
@@ -2027,6 +2034,15 @@ async def tiktok_avatar_command(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as exc:
         logger.exception("TikTok avatar download failed for @%s", username)
         await feedback.edit_text(f"Could not download that TikTok profile picture: {str(exc)[:250]}")
+
+async def tiktok_avatar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the explicit /tiktokavatar command."""
+    supplied = context.args[0].strip() if context.args else ""
+    profile_url = f"https://www.tiktok.com/{supplied}" if supplied.startswith("@") else supplied
+    if not is_tiktok_profile_url(profile_url):
+        await update.message.reply_text("Usage: /tiktokavatar <TikTok profile URL or @handle>")
+        return
+    await download_tiktok_avatar(update, context, profile_url)
 
 async def ask_for_tiktok_count(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
     """
@@ -3547,6 +3563,10 @@ async def record_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         auto_url = extract_first_http_url(update.message.text)
         if auto_url:
             await save_user_to_db(update, context, event_type="Automatic media download")
+            if is_tiktok_profile_url(auto_url):
+                feedback = await update.message.reply_text("Downloading TikTok profile picture...")
+                await download_tiktok_avatar(update, context, profile_url=auto_url, feedback=feedback)
+                return
             feedback = await update.message.reply_text("Downloading...")
             await handle_media_download(update, context, url=auto_url, feedback=feedback)
             return
