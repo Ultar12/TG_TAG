@@ -49,6 +49,7 @@ from sqlalchemy.types import BigInteger
 import yt_dlp
 from media_api import run_combined_webhook
 from youtube_uploader import authorize, upload_video
+from passport_frames import select_passport_frames
 
 from prettytable import PrettyTable
 
@@ -287,6 +288,72 @@ async def video_to_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+async def passport_photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Rank clear, front-facing frames from a replied-to video as draft candidates."""
+    message = update.message
+    replied = message.reply_to_message if message else None
+    media = replied and (replied.video or replied.animation or replied.document)
+    if not media or (replied.document and not (replied.document.mime_type or "").startswith("video/")):
+        await message.reply_text(
+            "Reply /passport to a video. I will send the best clear, front-facing frames as drafts.\n"
+            "This is not an official passport-compliance check."
+        )
+        return
+    temp_dir = os.path.join(DOWNLOAD_DIR, f"passport_{uuid.uuid4().hex}")
+    os.makedirs(temp_dir, exist_ok=True)
+    feedback = await message.reply_text("Studying the video for clear passport-photo candidates...")
+    try:
+        source_path = os.path.join(temp_dir, "source.bin")
+        telegram_file = await context.bot.get_file(media.file_id)
+        await telegram_file.download_to_drive(source_path)
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", source_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await probe.communicate()
+        duration = float(stdout.decode().strip() or "0")
+        if duration <= 0:
+            raise RuntimeError("Could not read video duration.")
+        frame_count = min(60, max(12, round(duration * 2)))
+        frame_paths: list[str] = []
+        for index in range(frame_count):
+            timestamp = duration * (index + 1) / (frame_count + 1)
+            frame_path = os.path.join(temp_dir, f"candidate-{index + 1}.jpg")
+            extract = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                "-ss", f"{timestamp:.3f}", "-i", source_path,
+                "-map", "0:v:0", "-frames:v", "1", "-an", "-q:v", "2", frame_path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await extract.communicate()
+            if extract.returncode == 0 and os.path.isfile(frame_path) and os.path.getsize(frame_path) > 0:
+                frame_paths.append(frame_path)
+            else:
+                logger.debug("Could not extract passport frame %s: %s", index + 1, stderr.decode(errors="replace")[-200:])
+        candidates = await asyncio.to_thread(select_passport_frames, frame_paths, 3)
+        if not candidates:
+            raise RuntimeError("No clear front-facing face was detected. Try a brighter, steadier video.")
+        await feedback.edit_text(
+            f"I found {len(candidates)} draft candidate(s). Review them carefully against your country's official rules."
+        )
+        for index, candidate in enumerate(candidates, start=1):
+            with open(candidate["path"], "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=message.chat_id,
+                    photo=photo,
+                    caption=(
+                        f"Passport draft candidate {index}/{len(candidates)}\n"
+                        f"Frame quality score: {candidate['score']:.0%}\n"
+                        "Draft only — verify size, background, expression, head position, and other official requirements yourself."
+                    ),
+                )
+    except Exception as exc:
+        logger.exception("Passport frame selection failed: %s", exc)
+        await feedback.edit_text(f"I could not select passport-photo drafts: {str(exc)[:350]}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 Base = declarative_base()
@@ -402,6 +469,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**/ytsearch <query>**: Search for YouTube videos.\n"
         "**/play <song name>**: Search and download a song or video.\n"
         "**/tiktokavatar <profile URL or @handle>**: Download a TikTok profile picture.\n"
+        "**/passport**: Reply to a video to select clear passport-photo draft frames.\n"
         "**/nosubs**: Reply to a video to remove soft subtitle tracks locally.\n"
         "**/tts <text>**: Convert text to speech.\n"
         "**/stt**: Reply to voice, audio, or video to transcribe speech.\n"
@@ -3669,6 +3737,7 @@ CommandHandler("readtext", read_text_from_image_command),
         CommandHandler("ytstatus", youtube_status_command), CommandHandler("post", post_replied_video_command),
         CommandHandler("nosubs", remove_subtitles_command),
         CommandHandler("tiktokavatar", tiktok_avatar_command),
+        CommandHandler("passport", passport_photo_command),
         CommandHandler("tiktoksearch", tiktok_search_command), CommandHandler("ytsearch", youtube_command),
         CommandHandler("db", db_command), session_conversation
     ]

@@ -31,6 +31,7 @@ google-auth-httplib2==0.2.0
 # File and image handling
 PyMuPDF==1.28.2
 Pillow==12.3.0
+opencv-python-headless==4.11.0.86
 pytesseract==0.3.13
 
 # Utilities
