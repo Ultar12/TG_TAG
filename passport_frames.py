@@ -116,3 +116,30 @@ def select_passport_frames(frame_paths: list[str], max_results: int = 3) -> list
         if len(selected) >= max_results:
             break
     return selected
+
+
+def crop_passport_portrait(candidate: dict[str, Any], output_path: str) -> str:
+    """Create one centered 35:45 portrait draft from a scored frame."""
+    image = cv2.imread(candidate["path"])
+    if image is None or image.size == 0:
+        raise RuntimeError("The selected frame could not be read.")
+    height, width = image.shape[:2]
+    x, y, face_width, face_height = candidate["face"]
+    target_ratio = 35 / 45
+    crop_height = min(height, max(int(face_height / 0.43), int(height * 0.72)))
+    crop_width = min(width, max(int(crop_height * target_ratio), int(face_width * 1.65)))
+    crop_height = min(height, max(int(crop_width / target_ratio), crop_height))
+    face_center_x = x + face_width / 2
+    face_center_y = y + face_height / 2
+    # Keep the eyes/face in a natural upper-middle position and include shoulders.
+    left = int(face_center_x - crop_width / 2)
+    top = int(face_center_y - crop_height * 0.38)
+    left = max(0, min(left, width - crop_width))
+    top = max(0, min(top, height - crop_height))
+    crop = image[top : top + crop_height, left : left + crop_width]
+    if crop.size == 0:
+        raise RuntimeError("Could not create the portrait crop.")
+    crop = cv2.resize(crop, (700, 900), interpolation=cv2.INTER_AREA)
+    if not cv2.imwrite(output_path, crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95]):
+        raise RuntimeError("Could not save the portrait draft.")
+    return output_path
