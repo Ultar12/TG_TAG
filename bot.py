@@ -49,7 +49,7 @@ from sqlalchemy.types import BigInteger
 import yt_dlp
 from media_api import run_combined_webhook
 from youtube_uploader import authorize, upload_video
-from passport_frames import crop_passport_portrait, select_passport_frames
+from passport_frames import select_passport_frames
 
 from prettytable import PrettyTable
 
@@ -331,23 +331,23 @@ async def passport_photo_command(update: Update, context: ContextTypes.DEFAULT_T
                 frame_paths.append(frame_path)
             else:
                 logger.debug("Could not extract passport frame %s: %s", index + 1, stderr.decode(errors="replace")[-200:])
-        candidates = await asyncio.to_thread(select_passport_frames, frame_paths, 1)
+        candidates = await asyncio.to_thread(select_passport_frames, frame_paths, 3)
         if not candidates:
             raise RuntimeError("No clear front-facing face was detected. Try a brighter, steadier video.")
-        candidate = candidates[0]
-        portrait_path = os.path.join(temp_dir, "passport-photo-draft.jpg")
-        await asyncio.to_thread(crop_passport_portrait, candidate, portrait_path)
-        await feedback.edit_text("I selected and cropped the best normal-position portrait frame. Please review it carefully.")
-        with open(portrait_path, "rb") as photo:
-            await context.bot.send_photo(
-                chat_id=message.chat_id,
-                photo=photo,
-                caption=(
-                    "Passport photo draft (35:45 portrait crop)\n"
-                    f"Frame quality score: {candidate['score']:.0%}\n"
-                    "Draft only — verify background, expression, dimensions, and other official requirements yourself."
-                ),
-            )
+        await feedback.edit_text(
+            f"I found {len(candidates)} draft candidate(s). Review them carefully against your country's official rules."
+        )
+        for index, candidate in enumerate(candidates, start=1):
+            with open(candidate["path"], "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=message.chat_id,
+                    photo=photo,
+                    caption=(
+                        f"Passport draft candidate {index}/{len(candidates)}\n"
+                        f"Frame quality score: {candidate['score']:.0%}\n"
+                        "Draft only — verify size, background, expression, head position, and other official requirements yourself."
+                    ),
+                )
     except Exception as exc:
         logger.exception("Passport frame selection failed: %s", exc)
         await feedback.edit_text(f"I could not select passport-photo drafts: {str(exc)[:350]}")
